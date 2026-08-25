@@ -310,6 +310,11 @@ kbd{
           <select id="voice"><option>Loading voices…</option></select>
         </div>
         <label class="chk"><input type="checkbox" id="localOnly" checked> Offline voices only</label>
+        <div id="edgeTip" class="net-warn" style="display:none;background:rgba(91,147,214,.10);border-color:rgba(91,147,214,.35);color:#bcd6f3">
+          Only basic robotic voices here. For voices that sound close to a real narrator, open this page in
+          <b>Microsoft Edge</b> and untick the box above — Edge offers free “Natural” voices. Your script is
+          sent to Microsoft to be spoken.
+        </div>
         <div id="netWarn" class="net-warn" style="display:none">
           Voices marked <b>online</b> are not on your machine — your script gets sent to the voice provider to
           be spoken. Untick this only if you're fine with that.
@@ -367,6 +372,21 @@ kbd{
           <div class="swatches" id="swatches" role="group" aria-labelledby="swLabel"></div>
         </div>
       </div>
+
+      <label class="chk" style="margin-top:14px">
+        <input type="checkbox" id="emphasise"> Pick out the important words automatically
+      </label>
+      <div id="keyRow" style="display:none;margin-top:9px">
+        <div class="field">
+          <label id="keyLabel">Important word colour <b id="keyCount"></b></label>
+          <div class="swatches" id="keySwatches" role="group" aria-labelledby="keyLabel"></div>
+        </div>
+        <p class="hint" style="margin:9px 0 0">
+          Filler words stay white; numbers and the longer, technical words get this colour.
+          It's a rule of thumb, not always right — <b>Shift-click any word</b> in step 4 to turn its
+          emphasis on or off.
+        </p>
+      </div>
     </section>
 
     <section class="step">
@@ -418,6 +438,8 @@ const S = {
   sizePct: 8.5,
   posPct: 72,
   hlColor: "#FFD400",
+  emphasise: false,         // pick out the meaningful words
+  keyColor: "#FF8A3D",
   hasAudio: false,          // a voiceover FILE is loaded
   voMode: "generated",      // "generated" (spoken here) or "file"
   rate: 1,                  // speaking speed
@@ -432,6 +454,12 @@ const COLORS = [
   ["#41D6EE", "Cyan"],
   ["#FF5C7A", "Rose"],
   ["#FFFFFF", "White"]
+];
+const KEY_COLORS = [
+  ["#FF8A3D", "Orange"],
+  ["#5CE08A", "Mint"],
+  ["#41D6EE", "Cyan"],
+  ["#FF5C7A", "Rose"]
 ];
 
 const FONT_STACK = 'Anton, "Arial Narrow", Impact, Haettenschweiler, sans-serif';
@@ -554,6 +582,33 @@ scriptEl.addEventListener("input", () => {
   parseTimer = setTimeout(parseScript, 220);
 });
 
+/* ------------------------------------------------------------
+   Picking out the words worth emphasising.
+
+   This is a rule of thumb, not a language model: everyday filler words
+   are ignored, and numbers plus longer / technical-looking words are
+   treated as the ones carrying the meaning. It gets anatomy and health
+   terms right most of the time. Shift-click any word to overrule it.
+   ------------------------------------------------------------ */
+const STOPWORDS = new Set(("a about above after again against all am an and any are aren't as at be because been " +
+  "before being below between both but by can cannot could couldn't did didn't do does doesn't doing don't down " +
+  "during each few for from further had hadn't has hasn't have haven't having he her here hers herself him " +
+  "himself his how i if in into is isn't it its itself just let's me more most mustn't my myself no nor not of " +
+  "off on once only or other ought our ours ourselves out over own same shan't she should shouldn't so some " +
+  "such than that the their theirs them themselves then there these they this those through to too under until " +
+  "up very was wasn't we were weren't what when where which while who whom why with won't would wouldn't you " +
+  "your yours yourself yourselves get got make made take takes go goes going come comes one two three like " +
+  "really actually never always every much many lot lots thing things way ways new old good bad big small"
+).split(" "));
+
+function isKeyWord(text) {
+  const t = text.toLowerCase();
+  if (/\d/.test(text)) return true;          // numbers, doses, percentages
+  if (STOPWORDS.has(t)) return false;
+  if (text.length >= 6) return true;         // the technical term is usually the long one
+  return false;
+}
+
 function parseScript() {
   const raw = scriptEl.value;
   const next = [];
@@ -563,13 +618,16 @@ function parseScript() {
     const text = m[0].replace(/[^\p{L}\p{N}'’\-]/gu, "").toUpperCase();
     // pos = where this word starts in the raw script, so speech boundary
     // events (which report a character index) can be mapped back to it.
-    if (text) next.push({ raw: m[0], text, pos: m.index, start: null, end: null });
+    if (text) next.push({ raw: m[0], text, pos: m.index, start: null, end: null,
+                          key: isKeyWord(text), keyManual: false });
   }
   // Keep timings for the unchanged leading run, so light edits don't wipe your work.
   const old = S.words;
   for (let i = 0; i < next.length; i++) {
     if (old[i] && old[i].text === next[i].text) {
       next[i].start = old[i].start; next[i].end = old[i].end;
+      // keep any emphasis you set by hand
+      if (old[i].keyManual) { next[i].key = old[i].key; next[i].keyManual = true; }
     } else break;
   }
   S.words = next;
@@ -693,14 +751,33 @@ function loadVoices() {
   }
   const keep = sel.value;
   sel.innerHTML = "";
-  list.forEach(o => {
+  // Natural / neural voices sound far better than the old built-in ones,
+  // so surface them in their own group at the top.
+  const natural = list.filter(o => /natural|neural/i.test(o.v.name));
+  const plain = list.filter(o => !/natural|neural/i.test(o.v.name));
+  const addTo = (parent, o) => {
     const opt = document.createElement("option");
     opt.value = String(o.i);
-    opt.textContent = o.v.name + " · " + o.v.lang + (o.v.localService ? "" : " · online");
-    sel.appendChild(opt);
-  });
+    opt.textContent = o.v.name.replace(/^Microsoft /, "") + " · " + o.v.lang +
+                      (o.v.localService ? "" : " · online");
+    parent.appendChild(opt);
+  };
+  if (natural.length) {
+    const g = document.createElement("optgroup");
+    g.label = "Natural sounding (" + natural.length + ")";
+    natural.forEach(o => addTo(g, o));
+    sel.appendChild(g);
+    const g2 = document.createElement("optgroup");
+    g2.label = "Basic";
+    plain.forEach(o => addTo(g2, o));
+    if (plain.length) sel.appendChild(g2);
+  } else {
+    plain.forEach(o => addTo(sel, o));
+  }
   if (keep && sel.querySelector('option[value="' + keep + '"]')) sel.value = keep;
-  setVoStatus("");
+
+  $("edgeTip").style.display = (!natural.length && localOnly) ? "" : "none";
+  setVoStatus(natural.length ? natural.length + " natural-sounding voices available." : "");
 }
 if (CAN_SPEAK) {
   loadVoices();
@@ -928,14 +1005,26 @@ function renderChips() {
     const b = document.createElement("button");
     b.type = "button";
     b.className = "chip" + (w.start !== null ? " done" : "") + ((i === cur && !closed) ? " now" : "");
-    b.title = "Re-record from “" + w.text + "” onward";
+    b.title = "Re-record from “" + w.text + "” onward · Shift-click to emphasise";
     const label = document.createElement("span");
     label.textContent = w.text;
+    if (S.emphasise && w.key) {
+      label.style.color = S.keyColor;
+      b.title = "“" + w.text + "” is marked important · Shift-click to unmark";
+    }
     const time = document.createElement("span");
     time.className = "t";
     time.textContent = w.start !== null ? w.start.toFixed(2) : "––––";
     b.append(label, time);
-    b.addEventListener("click", () => resyncFrom(i));
+    b.addEventListener("click", ev => {
+      if (ev.shiftKey) {                 // overrule the automatic pick
+        w.key = !w.key; w.keyManual = true;
+        if (!S.emphasise) { S.emphasise = true; $("emphasise").checked = true; $("keyRow").style.display = ""; }
+        renderChips();
+        return;
+      }
+      resyncFrom(i);
+    });
     frag.appendChild(b);
   });
 
@@ -952,6 +1041,8 @@ function renderChips() {
   }
 
   chipsEl.replaceChildren(frag);
+  const keyN = S.words.filter(w => w.key).length;
+  $("keyCount").textContent = S.emphasise ? keyN + " of " + S.words.length : "";
   const marked = S.words.filter(w => w.start !== null).length + (closed ? 1 : 0);
   $("tapProgress").style.width = Math.round(marked / (S.words.length + 1) * 100) + "%";
 
@@ -973,17 +1064,26 @@ bindRange("size", "sizePct", v => String(v).replace(/\.0+$/, "") + "%");
 bindRange("pos", "posPct", v => v + "%");
 $("wps").addEventListener("input", renderChips);
 
-const swatchWrap = $("swatches");
-COLORS.forEach(([hex, name]) => {
-  const b = document.createElement("button");
-  b.type = "button"; b.className = "swatch"; b.style.background = hex;
-  b.title = name; b.setAttribute("aria-label", name);
-  b.setAttribute("aria-pressed", hex === S.hlColor ? "true" : "false");
-  b.addEventListener("click", () => {
-    S.hlColor = hex;
-    [...swatchWrap.children].forEach(c => c.setAttribute("aria-pressed", c === b ? "true" : "false"));
+function buildSwatches(wrap, list, get, set) {
+  list.forEach(([hex, name]) => {
+    const b = document.createElement("button");
+    b.type = "button"; b.className = "swatch"; b.style.background = hex;
+    b.title = name; b.setAttribute("aria-label", name);
+    b.setAttribute("aria-pressed", hex === get() ? "true" : "false");
+    b.addEventListener("click", () => {
+      set(hex);
+      [...wrap.children].forEach(c => c.setAttribute("aria-pressed", c === b ? "true" : "false"));
+    });
+    wrap.appendChild(b);
   });
-  swatchWrap.appendChild(b);
+}
+buildSwatches($("swatches"), COLORS, () => S.hlColor, v => S.hlColor = v);
+buildSwatches($("keySwatches"), KEY_COLORS, () => S.keyColor, v => S.keyColor = v);
+
+$("emphasise").addEventListener("change", e => {
+  S.emphasise = e.target.checked;
+  $("keyRow").style.display = S.emphasise ? "" : "none";
+  renderChips();
 });
 
 /* ============================================================
@@ -1040,7 +1140,9 @@ function drawCaptions(ctx, W, H, t) {
     ctx.strokeText(w.text, x, y);
     ctx.shadowColor = "transparent";
     ctx.shadowBlur = 0; ctx.shadowOffsetY = 0;
-    ctx.fillStyle = (g.from + k === idx) ? S.hlColor : "#FFFFFF";
+    ctx.fillStyle = (g.from + k === idx) ? S.hlColor
+                  : (S.emphasise && w.key) ? S.keyColor
+                  : "#FFFFFF";
     ctx.fillText(w.text, x, y);
     x += m.ws[k] + m.gap;
   });
@@ -1144,9 +1246,12 @@ function buildASS() {
   S.words.forEach((w, i) => {
     if (w.start === null || w.end === null) return;
     const g = groupOf(i);
-    const text = g.words.map((word, k) =>
-      (g.from + k === i) ? "{\\c" + HL + "}" + word.text + "{\\c" + WHITE + "}" : word.text
-    ).join(" ");
+    const KEY = assColor(S.keyColor);
+    const text = g.words.map((word, k) => {
+      if (g.from + k === i) return "{\\c" + HL + "}" + word.text + "{\\c" + WHITE + "}";
+      if (S.emphasise && word.key) return "{\\c" + KEY + "}" + word.text + "{\\c" + WHITE + "}";
+      return word.text;
+    }).join(" ");
     L.push("Dialogue: 0," + assTime(w.start) + "," + assTime(w.end) +
            ",Karaoke,,0,0,0,,{\\pos(" + x + "," + y + ")}" + text);
   });
