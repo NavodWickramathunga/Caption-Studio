@@ -428,12 +428,35 @@ function renderAI(r, candidates) {
 
 /* ---------- apply + save ---------- */
 function applyVoice(v) {
-  try { localStorage.setItem(SAVE_KEY, v.name); } catch (e) {}
+  let stored = false;
+  try { localStorage.setItem(SAVE_KEY, v.name); stored = true; } catch (e) {}
   starred.add(v.name); render();
+
   const box = $("savedBox");
   box.style.display = "";
-  box.innerHTML = "<b>Saved</b> — " + v.name.replace(/^Microsoft /,"") +
-    " is now the voice Caption Studio starts with. <a href='index.html'>Go back and use it →</a>";
+  box.replaceChildren();
+
+  const line = document.createElement("div");
+  const name = v.name.replace(/^Microsoft /, "").replace(/\s*\(Natural\)/i, "");
+  line.innerHTML = stored
+    ? "<b>Picked:</b> " + name + " — this is the voice Caption Studio will use."
+    : "<b>Picked:</b> " + name + " — but this browser blocked saving it, so choose it again on the main page.";
+  box.appendChild(line);
+
+  if (!v.localService) {
+    const note = document.createElement("div");
+    note.style.cssText = "margin-top:6px;font-size:12px;opacity:.85";
+    note.textContent = "It's an online voice, so Caption Studio will switch off “Offline voices only” for you.";
+    box.appendChild(note);
+  }
+
+  const go = document.createElement("button");
+  go.className = "primary";
+  go.style.marginTop = "10px";
+  go.textContent = "Use it in Caption Studio →";
+  go.addEventListener("click", () => { stopAll(); location.href = "index.html"; });
+  box.appendChild(go);
+
   box.scrollIntoView({ block: "nearest" });
 }
 

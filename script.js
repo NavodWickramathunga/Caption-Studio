@@ -350,14 +350,28 @@ function loadVoices() {
   }
   if (keep && sel.querySelector('option[value="' + keep + '"]')) sel.value = keep;
   else {
-    // a voice chosen over in Voice Match becomes the one we start with
+    // A voice chosen over in Voice Match becomes the one we start with.
     let saved = null;
     try { saved = localStorage.getItem("captionStudio.voice"); } catch (e) {}
-    if (saved) {
+    if (saved && $("savedVoice")) {
       const idx = voices.findIndex(v => v.name === saved);
-      if (idx >= 0 && sel.querySelector('option[value="' + idx + '"]')) {
+      if (idx < 0) {
+        $("savedVoice").style.display = "";
+        $("savedVoice").style.color = "#e0b341";
+        $("savedVoice").textContent = "“" + saved.replace(/^Microsoft /, "") +
+          "” was picked in Voice Match but isn't installed in this browser. " +
+          "Open this page in the browser you chose it in.";
+      } else if (!voices[idx].localService && localOnly) {
+        // The natural voices are online ones. Don't let the offline filter
+        // silently swallow the choice - turn it off and rebuild the list.
+        $("localOnly").checked = false;
+        $("netWarn").style.display = "";
+        loadVoices();
+        return;
+      } else if (sel.querySelector('option[value="' + idx + '"]')) {
         sel.value = String(idx);
         $("savedVoice").style.display = "";
+        $("savedVoice").style.color = "#7fc9a4";
         $("savedVoice").textContent = "Using " + saved.replace(/^Microsoft /, "") + ", picked in Voice Match.";
       }
     }
@@ -1345,6 +1359,161 @@ async function extractAudioWav(file, maxSeconds = 300) {
     dv.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
   }
   return new Blob([ab], { type: 'audio/wav' });
+}
+
+/* ============================================================
+   Timing the words straight from the audio - no network, no key
+
+   Speech has a shape: loud where words are, quiet between them. Find the
+   loud stretches, then hand the words out across them in proportion to
+   how long each word takes to say. Pauses land between words instead of
+   stretching one, because words are only ever placed inside a loud
+   stretch, never across a gap.
+   ============================================================ */
+
+function detectSpeechSegments(pcm, sr) {
+  const win = Math.round(sr * 0.02);      // 20 ms frames
+  const hop = Math.round(sr * 0.01);      // 10 ms steps
+  const rms = [];
+  for (let i = 0; i + win <= pcm.length; i += hop) {
+    let s = 0;
+    for (let j = 0; j < win; j++) { const v = pcm[i + j]; s += v * v; }
+    rms.push(Math.sqrt(s / win));
+  }
+  if (!rms.length) return [];
+
+  const sorted = rms.slice().sort((a, b) => a - b);
+  const floor = sorted[Math.floor(sorted.length * 0.20)];        // background level
+  const peak  = sorted[Math.floor(sorted.length * 0.95)];        // loud level
+  const thresh = Math.max(floor * 2.5, peak * 0.08, 1e-4);
+
+  // frames -> raw segments
+  const segs = [];
+  let start = -1;
+  for (let i = 0; i < rms.length; i++) {
+    const loud = rms[i] >= thresh;
+    if (loud && start < 0) start = i;
+    if (!loud && start >= 0) { segs.push([start, i]); start = -1; }
+  }
+  if (start >= 0) segs.push([start, rms.length]);
+
+  const toSec = f => f * hop / sr;
+  const MERGE_GAP = 0.12;   // a gap shorter than this is inside a word, not between words
+  const MIN_SEG   = 0.06;   // ignore clicks and breaths
+  const PAD       = 0.03;   // speech starts a touch before it crosses the threshold
+
+  const merged = [];
+  for (const [a, b] of segs) {
+    const s = Math.max(0, toSec(a) - PAD), e = toSec(b) + PAD;
+    const last = merged[merged.length - 1];
+    if (last && s - last.end < MERGE_GAP) last.end = e;
+    else merged.push({ start: s, end: e });
+  }
+  return merged.filter(m => m.end - m.start >= MIN_SEG);
+}
+
+/* Roughly how long a word takes to say, so longer words get more time. */
+function spokenWeight(word) {
+  const w = String(word || "").toLowerCase().replace(/[^a-z0-9']/g, "");
+  if (!w) return 1;
+  if (/^\d+$/.test(w)) return 1 + w.length * 0.6;          // digits are read out
+  const groups = w.match(/[aeiouy]+/g);
+  let syl = groups ? groups.length : 1;
+  if (/[^aeiouy]e$/.test(w) && syl > 1) syl--;             // silent trailing e
+  return Math.max(1, syl) + 0.35;                          // + a little per-word overhead
+}
+
+/* Spread S.words across the detected speech. Returns a short report. */
+function timeWordsFromSegments(segments, mediaDuration) {
+  const words = S.words;
+  if (!words.length) throw new Error("Paste your script in step 3 first.");
+  if (!segments.length) throw new Error("Couldn't hear any speech in that audio.");
+
+  const weights = words.map(w => spokenWeight(w.text));
+  const totalWeight = weights.reduce((a, b) => a + b, 0);
+  const totalSpeech = segments.reduce((a, s) => a + (s.end - s.start), 0);
+  const perWeight = totalSpeech / totalWeight;
+
+  // Give each segment its share of words, so no word straddles a pause.
+  let wi = 0;
+  segments.forEach((seg, si) => {
+    if (wi >= words.length) return;
+    const segDur = seg.end - seg.start;
+    const isLast = si === segments.length - 1;
+    let budget = segDur / perWeight;
+    const take = [];
+    while (wi < words.length && (isLast || budget > 0 || !take.length)) {
+      take.push(wi);
+      budget -= weights[wi];
+      wi++;
+      if (!isLast && budget <= 0) break;
+    }
+    const wSum = take.reduce((a, i) => a + weights[i], 0) || 1;
+    let t = seg.start;
+    take.forEach(i => {
+      const dur = segDur * (weights[i] / wSum);
+      words[i].start = t;
+      words[i].end = Math.min(seg.end, t + dur);
+      t += dur;
+    });
+  });
+
+  // Anything left over (shouldn't normally happen) rides out the last segment.
+  if (wi < words.length) {
+    const last = segments[segments.length - 1];
+    const remaining = words.length - wi;
+    const tail = Math.max(0.25, (mediaDuration || last.end) - last.end);
+    const step = tail / remaining;
+    let t = last.end;
+    for (; wi < words.length; wi++) { words[wi].start = t; words[wi].end = t + step; t += step; }
+  }
+
+  // Never let a word be zero-length or run backwards.
+  for (let i = 0; i < words.length; i++) {
+    if (words[i].end <= words[i].start) words[i].end = words[i].start + 0.08;
+    if (i && words[i].start < words[i - 1].end) words[i].start = words[i - 1].end;
+    if (words[i].end <= words[i].start) words[i].end = words[i].start + 0.08;
+  }
+  return { segments: segments.length, speechSeconds: +totalSpeech.toFixed(2) };
+}
+
+async function autoTimeFromAudio(file) {
+  const AC = window.AudioContext || window.webkitAudioContext;
+  const ctx = new AC();
+  let decoded;
+  try {
+    decoded = await ctx.decodeAudioData(await file.arrayBuffer());
+  } finally {
+    try { ctx.close(); } catch (e) {}
+  }
+  const segs = detectSpeechSegments(decoded.getChannelData(0), decoded.sampleRate);
+  const report = timeWordsFromSegments(segs, decoded.duration);
+  return report;
+}
+
+if ($("btnAutoTime")) {
+  $("btnAutoTime").addEventListener("click", async () => {
+    const btn = $("btnAutoTime");
+    // Prefer the separate voiceover if there is one, else the video's own sound.
+    const file = ($("audioFile").files && $("audioFile").files[0]) ||
+                 ($("videoFile").files && $("videoFile").files[0]);
+    if (!file) { say("Load your video in step 1 first.", "warn"); return; }
+    if (!S.words.length) { say("Paste your script in step 3 first.", "warn"); return; }
+
+    startAiClock(btn, "Listening");
+    try {
+      const report = await autoTimeFromAudio(file);
+      renderChips();
+      refreshExports();
+      const heard = report.segments === 1 ? "1 stretch of speech" : report.segments + " stretches of speech";
+      say(`Timed ${S.words.length} words from ${heard} (${report.speechSeconds}s of talking). ` +
+          `Play it back and click any word that looks off.`, "ok");
+      stopAiClock(btn, "✅ Timed!", 2200);
+    } catch (e) {
+      stopAiClock(btn);
+      say(String(e.message || e), "warn");
+    }
+  });
 }
 
 /* ============================================================
