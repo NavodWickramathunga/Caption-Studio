@@ -7,7 +7,10 @@
 <link rel="stylesheet" href="voice-match.css">
 
 <div class="app">
-  <a class="back" href="index.html">&larr; Back to Caption Studio</a>
+  <div style="display:flex; justify-content:space-between; align-items:center;">
+    <a class="back" href="index.html">&larr; Back to Caption Studio</a>
+    <button id="apiKeyBtn" class="api-key-btn">🔑 Gemini Key</button>
+  </div>
   <h1>Voice <em>Match</em></h1>
   <p class="sub">Load a clip you like. Get told which voice to use.</p>
 
@@ -25,8 +28,8 @@
   <section class="step ai">
     <h2><i>2</i>Have AI listen to it and recommend</h2>
     <div class="privacy">
-      <b>Privacy Notice:</b> This step securely sends the audio clip to the server to be analyzed by Gemini. 
-      Your video footage never leaves this machine. 
+      <b>Client-Side Gemini AI:</b> Uses your Gemini API key directly from your browser. 
+      Audio is processed in memory and never stored on any server.
     </div>
     <div class="row" style="margin-top: 15px;">
       <button id="analyse" class="primary big">Listen to my clip and recommend a voice</button>
@@ -65,4 +68,30 @@
   </section>
 </div>
 
+<!-- ============ GEMINI API KEY MODAL ============ -->
+<div class="modal-overlay" id="apiKeyModal">
+  <div class="modal-content">
+    <div class="modal-header">
+      <h3>Gemini AI Settings</h3>
+      <button class="modal-close" id="modalCloseBtn">&times;</button>
+    </div>
+    <p class="hint" style="margin-bottom:14px;">
+      Enter your Google Gemini API Key below to enable voice analysis matching directly from your browser.
+      Your key is stored safely in your local browser storage.
+    </p>
+    <div class="field" style="margin-bottom:16px;">
+      <label for="apiKeyInput" style="display:block; font-size:11px; text-transform:uppercase; color:var(--ivory-dim); margin-bottom:5px;">Gemini API Key</label>
+      <input type="password" id="apiKeyInput" placeholder="AIzaSy..." style="background:var(--panel-2); color:white; border:1px solid var(--line); border-radius:8px; padding:10px; font-family:var(--mono); font-size:13px; width:100%;">
+    </div>
+    <div style="display:flex; justify-content:space-between; align-items:center; gap:10px;">
+      <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener" style="font-size:12px; color:var(--vein);">Get a free Gemini API Key →</a>
+      <div style="display:flex; gap:8px;">
+        <button id="apiKeyClearBtn" class="ghost" style="font-size:12px;">Clear Key</button>
+        <button id="apiKeySaveBtn" class="primary" style="font-size:12px;">Save Settings</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script src="voice-match.js" type="module"></script>
+

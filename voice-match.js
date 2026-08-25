@@ -158,6 +158,60 @@ const SCHEMA = {
   required: ["transcript","voiceDescription","gender","recommendations"]
 };
 
+/* ============================================================
+   Gemini API Key Modal & State
+   ============================================================ */
+function getApiKey() {
+  return localStorage.getItem("gemini_api_key") || localStorage.getItem("captionStudio.geminiKey") || "";
+}
+function setApiKey(key) {
+  if (key) {
+    localStorage.setItem("gemini_api_key", key);
+  } else {
+    localStorage.removeItem("gemini_api_key");
+    localStorage.removeItem("captionStudio.geminiKey");
+  }
+  updateApiKeyBtnState();
+}
+function updateApiKeyBtnState() {
+  const btn = $("apiKeyBtn");
+  if (!btn) return;
+  const key = getApiKey();
+  if (key) {
+    btn.classList.add("active");
+    btn.textContent = "🔑 Gemini Connected";
+  } else {
+    btn.classList.remove("active");
+    btn.textContent = "🔑 Gemini Key";
+  }
+}
+if ($("apiKeyBtn")) {
+  $("apiKeyBtn").addEventListener("click", () => {
+    if ($("apiKeyInput")) $("apiKeyInput").value = getApiKey();
+    if ($("apiKeyModal")) $("apiKeyModal").classList.add("open");
+  });
+}
+if ($("modalCloseBtn")) {
+  $("modalCloseBtn").addEventListener("click", () => {
+    if ($("apiKeyModal")) $("apiKeyModal").classList.remove("open");
+  });
+}
+if ($("apiKeySaveBtn")) {
+  $("apiKeySaveBtn").addEventListener("click", () => {
+    const val = $("apiKeyInput").value.trim();
+    setApiKey(val);
+    if ($("apiKeyModal")) $("apiKeyModal").classList.remove("open");
+  });
+}
+if ($("apiKeyClearBtn")) {
+  $("apiKeyClearBtn").addEventListener("click", () => {
+    setApiKey("");
+    if ($("apiKeyInput")) $("apiKeyInput").value = "";
+    if ($("apiKeyModal")) $("apiKeyModal").classList.remove("open");
+  });
+}
+updateApiKeyBtnState();
+
 async function analyseWithAI() {
   const st = (m, k) => { $("aiStatus").className = "aistatus" + (k ? " " + k : ""); $("aiStatus").textContent = m; };
   if (!refFile) return st("Load a clip in step 1 first.", "err");
@@ -165,15 +219,13 @@ async function analyseWithAI() {
   const candidates = voices.filter(v => v.lang.toLowerCase().startsWith("en"));
   if (!candidates.length) return st("No English voices in this browser to choose from. Open this page in Microsoft Edge.", "err");
 
-  let activeKey = localStorage.getItem("gemini_api_key") || localStorage.getItem("captionStudio.geminiKey") || "";
+  let activeKey = getApiKey();
   if (!activeKey) {
-    const userKey = prompt("Please enter your Gemini API key for Voice Match:");
-    if (userKey) {
-      activeKey = userKey.trim();
-      localStorage.setItem("gemini_api_key", activeKey);
-    } else {
-      return st("Gemini API key is required for voice analysis.", "err");
+    if ($("apiKeyModal")) {
+      $("apiKeyInput").value = "";
+      $("apiKeyModal").classList.add("open");
     }
+    return st("Please set your Gemini API key in the settings modal.", "err");
   }
 
   $("analyse").disabled = true;
