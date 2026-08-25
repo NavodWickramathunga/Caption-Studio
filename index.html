@@ -323,8 +323,10 @@ kbd{
           <label for="rate">Speed <b id="rateVal">1.00×</b></label>
           <input type="range" id="rate" min="0.5" max="2" step="0.05" value="1">
         </div>
+        <p class="hint" id="savedVoice" style="display:none;margin:7px 0 0;color:#7fc9a4"></p>
         <p class="hint" style="margin:9px 0 0">
-          Not sure which voice to use? <a href="voice-match.html" style="color:var(--vein)">Compare them against a clip you like →</a>
+          Not sure which voice to use?
+          <a href="voice-match.html" style="color:var(--vein)">Load a clip you like and get one recommended →</a>
         </p>
         <div class="vo-actions">
           <button id="speakTime" class="primary">Speak it and time the words</button>
@@ -778,6 +780,19 @@ function loadVoices() {
     plain.forEach(o => addTo(sel, o));
   }
   if (keep && sel.querySelector('option[value="' + keep + '"]')) sel.value = keep;
+  else {
+    // a voice chosen over in Voice Match becomes the one we start with
+    let saved = null;
+    try { saved = localStorage.getItem("captionStudio.voice"); } catch (e) {}
+    if (saved) {
+      const idx = voices.findIndex(v => v.name === saved);
+      if (idx >= 0 && sel.querySelector('option[value="' + idx + '"]')) {
+        sel.value = String(idx);
+        $("savedVoice").style.display = "";
+        $("savedVoice").textContent = "Using " + saved.replace(/^Microsoft /, "") + ", picked in Voice Match.";
+      }
+    }
+  }
 
   $("edgeTip").style.display = (!natural.length && localOnly) ? "" : "none";
   setVoStatus(natural.length ? natural.length + " natural-sounding voices available." : "");
