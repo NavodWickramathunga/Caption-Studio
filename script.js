@@ -1227,24 +1227,34 @@ async function callGeminiApi(promptText, audioBlob = null, jsonSchema = null) {
     };
   }
 
-  const model = await resolveGeminiModel(apiKey);
-  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
-  const res = await fetch(endpoint, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(reqBody)
-  });
+  /* Google blocks newer keys from older models, and the block shows up only
+     when the request is made. So if the chosen model is refused, drop it,
+     pick another, and retry once - without making you click the button again. */
+  let res, model, lastMsg = "";
+  for (let attempt = 0; attempt < 2; attempt++) {
+    model = await resolveGeminiModel(apiKey);
+    res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(reqBody) }
+    );
+    if (res.ok) break;
 
-  if (!res.ok) {
     const errData = await res.json().catch(() => ({}));
-    const msg = errData.error?.message || "";
-    if (res.status === 404) {
-      GEMINI_MODEL = null;   // model retired underneath us - re-resolve next time
-      throw new Error(`The model "${model}" is no longer available. Try again and a current one will be picked.`);
+    lastMsg = errData.error?.message || "";
+    const refused = res.status === 404 ||
+                    /no longer available|not found|not supported|does not exist/i.test(lastMsg);
+
+    if (refused && attempt === 0) {
+      GEMINI_REJECTED.add(model);   // never offer this one again this session
+      GEMINI_MODEL = null;
+      continue;                      // resolve a different model and try again
     }
-    if (res.status === 429) throw new Error("Free-tier rate limit reached. Wait a minute and try again.");
-    if (res.status === 400 && /API key/i.test(msg)) throw new Error("That API key was rejected. Open the key dialog and paste a fresh one.");
-    throw new Error(msg || `Gemini API HTTP Error ${res.status}`);
+
+    if (res.status === 429) throw new Error("Free-tier rate limit reached. Wait about a minute and try again.");
+    if (res.status === 400 && /API key/i.test(lastMsg)) throw new Error("That API key was rejected. Open the 🔑 dialog and paste a fresh one.");
+    if (/quota|billing|credits/i.test(lastMsg)) throw new Error("This key's project is out of quota or credits. Make a key in a new project.");
+    if (refused) throw new Error(`No Gemini model on this key would accept the request. Last tried "${model}".`);
+    throw new Error(lastMsg || `Gemini API HTTP Error ${res.status}`);
   }
 
   const data = await res.json();
@@ -1258,31 +1268,36 @@ async function callGeminiApi(promptText, audioBlob = null, jsonSchema = null) {
    models it can actually reach rather than hardcoding one that goes stale.
    Resolved once per page load, then reused. */
 let GEMINI_MODEL = null;
+const GEMINI_REJECTED = new Set();   // models this key was refused, so we stop offering them
 
 async function resolveGeminiModel(apiKey) {
   if (GEMINI_MODEL) return GEMINI_MODEL;
+  const ver  = s => { const m = s.match(/(\d+(?:\.\d+)?)/); return m ? parseFloat(m[1]) : 0; };
+  const lite = s => /lite/i.test(s) ? 1 : 0;
+  const prev = s => /preview|exp/i.test(s) ? 1 : 0;
   try {
     const r = await fetch("https://generativelanguage.googleapis.com/v1beta/models?key=" + encodeURIComponent(apiKey));
     if (r.ok) {
       const j = await r.json();
-      const usable = (j.models || []).filter(m =>
-        (m.supportedGenerationMethods || []).includes("generateContent") &&
-        /flash/i.test(m.name) &&
-        !/image|tts|embedding|live|vision/i.test(m.name));
-      if (usable.length) {
-        const ver  = s => { const m = s.match(/(\d+(?:\.\d+)?)/); return m ? parseFloat(m[1]) : 0; };
-        const lite = s => /lite/i.test(s) ? 1 : 0;
-        const prev = s => /preview|exp/i.test(s) ? 1 : 0;
+      const usable = (j.models || [])
+        .map(m => m.name.replace(/^models\//, ""))
+        .filter(n => /flash/i.test(n) && !/image|tts|embedding|live|vision/i.test(n))
+        .filter(n => !GEMINI_REJECTED.has(n));
+      const withMethod = (j.models || [])
+        .filter(m => (m.supportedGenerationMethods || []).includes("generateContent"))
+        .map(m => m.name.replace(/^models\//, ""));
+      const pool = usable.filter(n => withMethod.includes(n));
+      if (pool.length) {
         // newest stable full Flash first
-        usable.sort((a, b) => prev(a.name) - prev(b.name) ||
-                              lite(a.name) - lite(b.name) ||
-                              ver(b.name)  - ver(a.name));
-        GEMINI_MODEL = usable[0].name.replace(/^models\//, "");
+        pool.sort((a, b) => prev(a) - prev(b) || lite(a) - lite(b) || ver(b) - ver(a));
+        GEMINI_MODEL = pool[0];
         return GEMINI_MODEL;
       }
     }
-  } catch (e) { /* fall through to the default below */ }
-  GEMINI_MODEL = "gemini-flash-latest";
+  } catch (e) { /* fall through to the defaults below */ }
+  // Couldn't ask, so work down a list of current names, skipping any already refused.
+  const fallbacks = ["gemini-flash-latest", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite"];
+  GEMINI_MODEL = fallbacks.find(n => !GEMINI_REJECTED.has(n)) || "gemini-flash-latest";
   return GEMINI_MODEL;
 }
 
