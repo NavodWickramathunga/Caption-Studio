@@ -111,7 +111,12 @@ const toBase64 = blob => new Promise((res, rej) => {
    ============================================================ */
 const API = "https://generativelanguage.googleapis.com/v1beta";
 
+/* Matches the main page: try this first, fall back when a key can't use it. */
+const PREFERRED_MODEL = "gemini-2.5-flash";
+const MODEL_REJECTED = new Set();
+
 async function pickModel(key) {
+  if (PREFERRED_MODEL && !MODEL_REJECTED.has(PREFERRED_MODEL)) return PREFERRED_MODEL;
   const r = await fetch(API + "/models?key=" + encodeURIComponent(key));
   if (!r.ok) {
     const t = await r.text();
@@ -122,13 +127,15 @@ async function pickModel(key) {
   const j = await r.json();
   const usable = (j.models || []).filter(m =>
     (m.supportedGenerationMethods || []).includes("generateContent") &&
-    /flash/i.test(m.name) && !/image|tts|embedding|live/i.test(m.name));
+    /flash/i.test(m.name) && !/image|tts|embedding|live/i.test(m.name) &&
+    !MODEL_REJECTED.has(m.name.replace(/^models\//, "")));
   if (!usable.length) throw new Error("No usable Flash model on this key.");
-  // newest version number first, full Flash before Lite
+  // newest version number first, stable before preview, full Flash before Lite
   usable.sort((a, b) => {
-    const num = s => { const m = s.match(/(\d+(?:\.\d+)?)/); return m ? parseFloat(m[1]) : 0; };
+    const num  = s => { const m = s.match(/(\d+(?:\.\d+)?)/); return m ? parseFloat(m[1]) : 0; };
     const lite = s => /lite/i.test(s) ? 1 : 0;
-    return (lite(a.name) - lite(b.name)) || (num(b.name) - num(a.name));
+    const prev = s => /preview|exp/i.test(s) ? 1 : 0;
+    return (prev(a.name) - prev(b.name)) || (lite(a.name) - lite(b.name)) || (num(b.name) - num(a.name));
   });
   return usable[0].name.replace(/^models\//, "");
 }
@@ -236,31 +243,44 @@ async function analyseWithAI() {
     const b64 = await toBase64(wav.blob);
     st("Asking Gemini to analyze voice characteristics...");
 
-    const model = await pickModel(activeKey);
     const promptText = `Analyze the speaker's vocal characteristics (gender, pitch, tone, energy level) in this audio clip. Available TTS voice choices: ${candidates.map(v => v.name).join(", ")}.`;
-
-    const res = await fetch(`${API}/models/${model}:generateContent?key=${encodeURIComponent(activeKey)}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [{
-          role: "user",
-          parts: [
-            { text: promptText },
-            { inlineData: { mimeType: "audio/wav", data: b64 } }
-          ]
-        }],
-        generationConfig: {
-          responseMimeType: "application/json",
-          responseSchema: SCHEMA,
-          temperature: 0.2
-        }
-      })
+    const body = JSON.stringify({
+      contents: [{
+        role: "user",
+        parts: [
+          { text: promptText },
+          { inlineData: { mimeType: "audio/wav", data: b64 } }
+        ]
+      }],
+      generationConfig: {
+        responseMimeType: "application/json",
+        responseSchema: SCHEMA,
+        temperature: 0.2
+      }
     });
 
-    if (!res.ok) {
+    /* Google only reveals that a key can't use a model when the request is
+       made, so a refusal means pick another and try once more. */
+    let res, model;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      model = await pickModel(activeKey);
+      res = await fetch(`${API}/models/${model}:generateContent?key=${encodeURIComponent(activeKey)}`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body
+      });
+      if (res.ok) break;
+
       const err = await res.json().catch(() => ({}));
-      throw new Error(err.error?.message || `HTTP ${res.status}`);
+      const msg = err.error?.message || "";
+      const refused = res.status === 404 ||
+                      /no longer available|not found|not supported|does not exist/i.test(msg);
+
+      if (refused && attempt === 0) { MODEL_REJECTED.add(model); continue; }
+
+      if (res.status === 429) throw new Error("Free-tier rate limit reached. Wait about a minute and try again.");
+      if (res.status === 400 && /API key/i.test(msg)) throw new Error("That API key was rejected. Open the 🔑 dialog and paste a fresh one.");
+      if (/quota|billing|credits/i.test(msg)) throw new Error("This key's project is out of quota or credits. Make a key in a new project.");
+      if (refused) throw new Error(`No Gemini model on this key would accept the request. Last tried "${model}".`);
+      throw new Error(msg || `HTTP ${res.status}`);
     }
 
     const data = await res.json();
