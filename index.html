@@ -329,10 +329,11 @@ kbd{
 
       <!-- load a file -->
       <div id="filePanel" style="display:none">
-        <p class="hint">If your narration is already a file, load it here. The video's own sound is muted and
-          the two play as one.</p>
+        <p class="hint">If your narration is already a file, load it here — an audio file, or
+          <b>another video whose voice you want to reuse</b>. Only its sound is taken. Your clip's own
+          audio is muted and the two play as one.</p>
         <div class="filerow">
-          <label class="filebtn">Choose audio…<input type="file" id="audioFile" accept="audio/*"></label>
+          <label class="filebtn">Choose audio or video…<input type="file" id="audioFile" accept="audio/*,video/*"></label>
           <span class="filename none" id="audioName">using the video's own audio</span>
           <button id="clearAudio" class="ghost" style="display:none">Remove</button>
         </div>
@@ -511,7 +512,23 @@ video.addEventListener("loadedmetadata", () => {
   overlay.height = video.videoHeight || 1920;
   syncTransport();
 });
-audio.addEventListener("loadedmetadata", syncTransport);
+audio.addEventListener("loadedmetadata", () => {
+  // A video file loaded here contributes its sound only. If it carries no
+  // audio track at all there is nothing to use, so say so plainly.
+  if (!isFinite(audio.duration) || audio.duration === 0) {
+    $("audioName").textContent = "that file has no usable sound — try another";
+    $("audioName").classList.add("none");
+  }
+  syncTransport();
+});
+audio.addEventListener("error", () => {
+  if (!audio.src) return;
+  $("audioName").textContent = "couldn't read the sound from that file — try another";
+  $("audioName").classList.add("none");
+  S.hasAudio = false;
+  video.muted = false;
+  syncTransport();
+});
 [video, audio].forEach(el => {
   el.addEventListener("play", syncTransport);
   el.addEventListener("pause", syncTransport);
