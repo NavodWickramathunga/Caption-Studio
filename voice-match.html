@@ -8,7 +8,7 @@
 :root{
   --ground:#0c1117;--panel:#121b24;--panel-2:#18232f;--line:#243342;--line-soft:#1c2733;
   --ivory:#efe7d9;--ivory-dim:#93a2b0;--ivory-faint:#5d6d7c;
-  --rose:#dd5f77;--rose-deep:#a63c53;--vein:#5b93d6;--vein-deep:#31537c;--gold:#e0b341;
+  --rose:#dd5f77;--rose-deep:#a63c53;--vein:#5b93d6;--vein-deep:#31537c;--gold:#e0b341;--mint:#7fc9a4;
   --mono:"JetBrains Mono",ui-monospace,Consolas,monospace;
   --display:"Anton","Arial Narrow",Impact,sans-serif;
   --ui:"Inter",-apple-system,"Segoe UI",system-ui,sans-serif;
@@ -32,70 +32,101 @@ button:hover:not(:disabled),.filebtn:hover{background:#1f2d3b;border-color:#3146
 button:disabled{opacity:.36;cursor:not-allowed}
 button.primary{background:var(--rose-deep);border-color:#c04d67;color:#ffeef1}
 button.primary:hover:not(:disabled){background:#bd4a62}
+button.big{font-size:14px;padding:11px 18px}
 .filebtn{display:inline-flex;align-items:center;gap:8px;position:relative}
 .filebtn input{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}
 :focus-visible{outline:2px solid var(--vein);outline-offset:2px;border-radius:6px}
 .filebtn:focus-within{outline:2px solid var(--vein);outline-offset:2px}
 input[type=text]{width:100%;font:inherit;font-size:13px;background:var(--panel-2);color:var(--ivory);border:1px solid var(--line);border-radius:8px;padding:9px 11px}
+select{font:inherit;font-size:13px;color:var(--ivory);background:var(--panel-2);border:1px solid var(--line);border-radius:8px;padding:7px 9px}
 .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 .fname{font-family:var(--mono);font-size:11.5px;color:var(--ivory-dim);word-break:break-all}
 .fname.none{color:var(--ivory-faint)}
-.chk{display:inline-flex;align-items:center;gap:7px;font-size:12px;color:var(--ivory-dim);cursor:pointer}
-.chk input{accent-color:var(--vein);width:14px;height:14px}
 audio{width:100%;margin-top:10px;filter:invert(.9) hue-rotate(180deg)}
 
-/* voice list */
-.vlist{display:flex;flex-direction:column;gap:7px;max-height:60vh;overflow-y:auto;padding-right:4px}
+.verdict{margin-top:12px;padding:11px 13px;border-radius:9px;background:var(--panel-2);border:1px solid var(--line)}
+.verdict.ok{border-color:#2c4a3c;background:#182a23}
+.verdict b{font-family:var(--display);letter-spacing:.05em;font-size:15px;text-transform:uppercase}
+.verdict .num{font-family:var(--mono);font-size:12px;color:var(--ivory-dim);display:block;margin-top:3px}
+
+.filters{display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end;margin-bottom:12px}
+.f{display:flex;flex-direction:column;gap:4px}
+.f label{font-size:10.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--ivory-dim)}
+
+.vlist{display:flex;flex-direction:column;gap:7px;max-height:52vh;overflow-y:auto;padding-right:4px}
 .v{display:flex;align-items:center;gap:10px;background:var(--panel-2);border:1px solid var(--line);border-radius:9px;padding:9px 11px}
-.v.playing{border-color:var(--rose);box-shadow:0 0 0 3px rgba(221,95,119,.15)}
+.v.playing{border-color:var(--rose);box-shadow:0 0 0 3px rgba(221,95,119,.18);background:#2a1a20}
 .v.starred{border-color:var(--gold);background:#241f14}
 .vname{flex:1;min-width:0}
 .vname b{display:block;font-weight:600;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .vname span{font-family:var(--mono);font-size:10.5px;color:var(--ivory-faint)}
-.tag{font-family:var(--mono);font-size:9.5px;text-transform:uppercase;letter-spacing:.06em;padding:2px 6px;border-radius:4px;background:var(--vein-deep);color:#dbe9fb}
-.tag.local{background:#20402f;color:#8fd6ae}
-.star{background:transparent;border:0;font-size:17px;line-height:1;padding:4px 6px;color:var(--ivory-faint);cursor:pointer}
+.tag{font-family:var(--mono);font-size:9.5px;text-transform:uppercase;letter-spacing:.06em;padding:2px 6px;border-radius:4px;background:var(--vein-deep);color:#dbe9fb;white-space:nowrap}
+.tag.m{background:#1e3a52;color:#a8cdf0}
+.tag.f{background:#4a2438;color:#f0b6cd}
+.star{background:transparent;border:0;font-size:18px;line-height:1;padding:4px 6px;color:var(--ivory-faint);cursor:pointer}
 .star.on{color:var(--gold)}
 .count{font-family:var(--mono);font-size:11.5px;color:var(--ivory-dim);margin:10px 0 0}
 .count b{color:var(--ivory)}
+.count .cut{color:var(--mint)}
 .shortlist{background:#241f14;border:1px solid #4a3d1c;border-radius:9px;padding:12px 14px;margin-top:12px}
 .shortlist h3{margin:0 0 6px;font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--gold)}
-.shortlist p{margin:0;font-family:var(--mono);font-size:12px;line-height:1.7}
+.shortlist p{margin:0;font-family:var(--mono);font-size:12px;line-height:1.7;white-space:pre-line}
 .warn{margin-top:10px;padding:9px 11px;border-radius:7px;font-size:12px;background:rgba(221,95,119,.10);border:1px solid rgba(221,95,119,.35);color:#f0b6c1}
-@media (max-width:600px){ .app{padding:16px} }
+.nowplaying{font-family:var(--mono);font-size:12px;color:var(--rose);min-height:18px;margin-top:9px}
+kbd{font-family:var(--mono);font-size:10.5px;background:var(--panel-2);color:var(--ivory);border:1px solid var(--line);border-bottom-width:2px;border-radius:5px;padding:2px 6px}
+@media (max-width:600px){.app{padding:16px}}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 </style>
 
 <div class="app">
   <a class="back" href="index.html">&larr; Back to Caption Studio</a>
   <h1>Voice <em>Match</em></h1>
-  <p class="sub">Play your reference clip, then hear the same line in each voice. Star the ones that sound close.</p>
+  <p class="sub">Narrows hundreds of voices down to a handful, then plays them for you one after another.</p>
 
   <section class="step">
     <h2><i>1</i>Load the clip you want to match</h2>
-    <p class="hint">The video or audio whose voice you're trying to find. Only its sound is used.</p>
+    <p class="hint">Its pitch is measured to work out whether you need a male or female voice — that alone removes about half the list.</p>
     <div class="row">
       <label class="filebtn">Choose file…<input type="file" id="refFile" accept="audio/*,video/*"></label>
       <span class="fname none" id="refName">nothing loaded</span>
     </div>
     <audio id="ref" controls preload="metadata"></audio>
+    <div class="verdict" id="verdict" style="display:none"></div>
   </section>
 
   <section class="step">
     <h2><i>2</i>Type a line it says</h2>
-    <p class="hint">Use words actually spoken in the clip — comparing the same sentence makes the difference obvious.</p>
-    <input type="text" id="line" value="Your thyroid sits at the base of your neck, and it runs on iodine.">
+    <input type="text" id="line" value="Your thyroid sits at the base of your neck.">
   </section>
 
   <section class="step">
-    <h2><i>3</i>Compare</h2>
-    <p class="hint"><b>A/B</b> plays your clip first, then the voice, so you hear them back to back.
-       <b>Hear it</b> plays just the voice. Star anything close.</p>
-    <div class="row" style="margin-bottom:11px">
-      <button id="playRef">Play my clip</button>
-      <button id="stopAll">Stop</button>
-      <label class="chk"><input type="checkbox" id="naturalOnly"> Natural-sounding voices only</label>
+    <h2><i>3</i>Listen through the shortlist</h2>
+    <div class="filters">
+      <div class="f"><label for="fLang">Language</label>
+        <select id="fLang"><option value="en">English only</option></select></div>
+      <div class="f"><label for="fGender">Voice type</label>
+        <select id="fGender">
+          <option value="any">Any</option>
+          <option value="m">Male</option>
+          <option value="f">Female</option>
+        </select></div>
+      <div class="f"><label for="fQuality">Quality</label>
+        <select id="fQuality">
+          <option value="natural">Natural only</option>
+          <option value="all">All</option>
+        </select></div>
     </div>
+
+    <div class="row" style="margin-bottom:4px">
+      <button id="audition" class="primary big">▶ Play them all, one after another</button>
+      <button id="stopAll">Stop</button>
+      <button id="playRef">Play my clip</button>
+    </div>
+    <p class="hint" style="margin:9px 0 0">
+      While it plays: <kbd>S</kbd> star the one you're hearing · <kbd>→</kbd> skip to the next · <kbd>Esc</kbd> stop
+    </p>
+    <div class="nowplaying" id="nowPlaying"></div>
+
     <div id="noVoices" class="warn" style="display:none"></div>
     <div class="vlist" id="vlist"></div>
     <p class="count" id="count"></p>
@@ -111,16 +142,127 @@ audio{width:100%;margin-top:10px;filter:invert(.9) hue-rotate(180deg)}
 const $ = id => document.getElementById(id);
 const TTS = window.speechSynthesis;
 const ref = $("ref");
-let voices = [], starred = new Set(), refURL = null, abTimer = null;
+let voices = [], starred = new Set(), refURL = null;
+let auditionOrder = [], auditionAt = -1, auditioning = false;
+
+/* ============================================================
+   Known Microsoft voice names by gender. The Web Speech API
+   doesn't report gender, so this is how the list gets halved.
+   ============================================================ */
+const FEMALE = new Set(("aria jenny michelle ana ashley cora elizabeth monica sara amber jane nancy emma libby " +
+  "sonia maisie natasha freya clara molly luna yan hiumaan xiaoxiao xiaoyi denise eloise vivienne brigitte " +
+  "isabella francisca camila elvira dalia salome sofia paloma katja amala louisa ingrid elsa noora swara " +
+  "neerja yara zariyah leah mia hoda amina asilia zuri imani nia rehema pallavi sapna nabanita tanishaa " +
+  "kalpana gomathi mohan pallavi kani venba shruti aarohi kavya sarika bashkar hemkala kani heera midori " +
+  "nanami mayu shiori seoyeon sunhi jimin gaeul hyunsu premwadee achara pattara thalita yasmin giovanna " +
+  "leticia manuela ines margarida raquel fernanda karina veronika svetlana dariya polina daria ekaterina " +
+  "tatyana anu kert liisi kadri anna adri mila zofia agnieszka renata vlasta zora viktoria noemi szabolcs " +
+  "alina emil ioana mihaela nikolina gabrijela dubravka amaya larissa aria2 blessica rosa marisa " +
+  "seraphina florence ada nova"
+).split(/\s+/));
+const MALE = new Set(("guy davis jason tony andrew brian christopher eric roger steffan ryan thomas alfie " +
+  "elliot ethan noah oliver liam william connor duncan sam finn james mitchell neerjaman prabhat madhur " +
+  "mohan kunal gagan sam2 yunxi yunjian yunyang yunye wanlung danny henry antoine jean remy alain claude " +
+  "thierry maurice conrad bernd christoph kasper killian klaus ralf diego jorge liberto alvaro arnau " +
+  "dario elias nil saul teo lorenzo diego2 gianni calimero benigno cataldo fabiano giuseppe imelda " +
+  "duarte joaquim antonio julio valentino keiichiro naoki daichi injoon bongjin gookmin niwat sergey " +
+  "dmitry pavel maxim borys ostap jakub antonin marek jozef lukas viktor tamas emil florian razvan " +
+  "goran nikola gabrijel matej rok petar hamed hamid moaz shakir bassel taim laith adam"
+).split(/\s+/));
+
+function firstName(v) {
+  // "Microsoft Aria Online (Natural) - English (United States)" -> "aria"
+  const m = v.name.replace(/^Microsoft\s+/i, "").match(/^([A-Za-z]+)/);
+  return m ? m[1].toLowerCase() : "";
+}
+function genderOf(v) {
+  const n = firstName(v);
+  if (FEMALE.has(n)) return "f";
+  if (MALE.has(n)) return "m";
+  return "?";
+}
+function isNatural(v) { return /natural|neural|online/i.test(v.name); }
+
+/* ============================================================
+   Measure the reference clip's pitch.
+
+   Male speech usually sits near 85-165 Hz, female near 165-255 Hz.
+   Autocorrelation over the loudest frames gives a median good enough
+   to choose which half of the voice list to show.
+   ============================================================ */
+async function analysePitch(file) {
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return null;
+  const ctx = new AC();
+  try {
+    const buf = await ctx.decodeAudioData(await file.arrayBuffer());
+    const sr = buf.sampleRate;
+    const data = buf.getChannelData(0);
+    const win = 2048, hop = 1024;
+    const minP = Math.floor(sr / 320), maxP = Math.floor(sr / 60);
+    const found = [];
+
+    // only look at frames with real energy - silence has no pitch
+    const frames = [];
+    for (let i = 0; i + win < data.length; i += hop) {
+      let rms = 0;
+      for (let j = 0; j < win; j++) rms += data[i + j] * data[i + j];
+      frames.push({ i, rms: Math.sqrt(rms / win) });
+    }
+    if (!frames.length) return null;
+    const loud = frames.slice().sort((a, b) => b.rms - a.rms);
+    const thresh = loud[Math.floor(loud.length * 0.35)].rms;
+
+    for (const f of frames) {
+      if (f.rms < thresh || f.rms < 0.01) continue;
+      let best = -1, bestVal = 0;
+      let e0 = 0;
+      for (let j = 0; j < win; j++) e0 += data[f.i + j] * data[f.i + j];
+      if (e0 <= 0) continue;
+      for (let p = minP; p <= maxP; p++) {
+        let sum = 0, e1 = 0;
+        for (let j = 0; j + p < win; j++) {
+          sum += data[f.i + j] * data[f.i + j + p];
+          e1 += data[f.i + j + p] * data[f.i + j + p];
+        }
+        const norm = sum / Math.sqrt(e0 * e1 + 1e-12);
+        if (norm > bestVal) { bestVal = norm; best = p; }
+      }
+      if (best > 0 && bestVal > 0.55) found.push(sr / best);
+      if (found.length > 400) break;
+    }
+    ctx.close();
+    if (found.length < 12) return null;
+    found.sort((a, b) => a - b);
+    return { medianHz: found[Math.floor(found.length / 2)], samples: found.length };
+  } catch (e) { try { ctx.close(); } catch (_) {} return null; }
+}
 
 /* ---------- reference clip ---------- */
-$("refFile").addEventListener("change", e => {
+$("refFile").addEventListener("change", async e => {
   const f = e.target.files[0]; if (!f) return;
   if (refURL) URL.revokeObjectURL(refURL);
   refURL = URL.createObjectURL(f);
   ref.src = refURL;
   $("refName").textContent = f.name;
   $("refName").classList.remove("none");
+
+  const v = $("verdict");
+  v.style.display = ""; v.className = "verdict";
+  v.innerHTML = "<b>Listening to it…</b><span class='num'>measuring pitch</span>";
+  const r = await analysePitch(f);
+  if (!r) {
+    v.innerHTML = "<b>Couldn't measure it</b><span class='num'>Pick the voice type yourself below.</span>";
+    return;
+  }
+  const hz = Math.round(r.medianHz);
+  const g = hz < 155 ? "m" : "f";
+  $("fGender").value = g;
+  v.className = "verdict ok";
+  v.innerHTML = "<b>Sounds like a " + (g === "m" ? "male" : "female") + " voice</b>" +
+    "<span class='num'>average pitch " + hz + " Hz · measured over " + r.samples +
+    " points · filtered the list to " + (g === "m" ? "male" : "female") + " voices</span>";
+  render();
 });
 ref.addEventListener("error", () => {
   if (!ref.src) return;
@@ -131,63 +273,110 @@ $("playRef").addEventListener("click", () => { stopAll(); ref.currentTime = 0; r
 $("stopAll").addEventListener("click", stopAll);
 
 function stopAll() {
-  clearTimeout(abTimer);
+  auditioning = false; auditionAt = -1;
   if (TTS) TTS.cancel();
   ref.pause();
+  $("nowPlaying").textContent = "";
   document.querySelectorAll(".v.playing").forEach(el => el.classList.remove("playing"));
 }
 
 /* ---------- voices ---------- */
-function isNatural(v) { return /natural|neural|online/i.test(v.name); }
-
 function loadVoices() {
   if (!TTS) return;
   voices = TTS.getVoices() || [];
+  const langs = [...new Set(voices.map(v => v.lang.split("-")[0]))].sort();
+  const sel = $("fLang"), keep = sel.value;
+  sel.innerHTML = "<option value='en'>English only</option><option value='all'>Every language</option>";
+  langs.filter(l => l !== "en").forEach(l => {
+    const o = document.createElement("option"); o.value = l; o.textContent = l; sel.appendChild(o);
+  });
+  if (keep) sel.value = keep;
   render();
 }
 if (TTS) { loadVoices(); TTS.addEventListener("voiceschanged", loadVoices); }
+["fLang","fGender","fQuality"].forEach(id => $(id).addEventListener("change", render));
 
-$("naturalOnly").addEventListener("change", render);
+function filtered() {
+  const lang = $("fLang").value, gen = $("fGender").value, q = $("fQuality").value;
+  return voices.filter(v => {
+    if (lang !== "all" && !v.lang.toLowerCase().startsWith(lang)) return false;
+    if (q === "natural" && !isNatural(v)) return false;
+    if (gen !== "any") { const g = genderOf(v); if (g !== gen) return false; }
+    return true;
+  }).sort((a, b) => (isNatural(b) - isNatural(a)) || a.name.localeCompare(b.name));
+}
 
-function speak(v, row) {
+function speak(v, row, onDone) {
   if (!TTS) return;
   const u = new SpeechSynthesisUtterance($("line").value || "Testing this voice.");
   u.voice = v;
-  u.onstart = () => { document.querySelectorAll(".v.playing").forEach(el => el.classList.remove("playing")); row.classList.add("playing"); };
-  u.onend = () => row.classList.remove("playing");
-  u.onerror = () => row.classList.remove("playing");
+  u.onstart = () => {
+    document.querySelectorAll(".v.playing").forEach(el => el.classList.remove("playing"));
+    if (row) { row.classList.add("playing"); row.scrollIntoView({ block: "nearest" }); }
+    $("nowPlaying").textContent = "▶ " + v.name.replace(/^Microsoft /, "");
+  };
+  u.onend = () => { if (row) row.classList.remove("playing"); if (onDone) onDone(); };
+  u.onerror = () => { if (row) row.classList.remove("playing"); if (onDone) onDone(); };
   TTS.speak(u);
 }
 
-function render() {
-  if (!TTS) {
-    $("noVoices").style.display = "";
-    $("noVoices").textContent = "This browser has no speech voices at all.";
+/* ---------- audition the whole shortlist back to back ---------- */
+$("audition").addEventListener("click", () => {
+  stopAll();
+  auditionOrder = filtered();
+  if (!auditionOrder.length) return;
+  auditioning = true; auditionAt = -1;
+  nextInAudition();
+});
+function nextInAudition() {
+  if (!auditioning) return;
+  auditionAt++;
+  if (auditionAt >= auditionOrder.length) {
+    auditioning = false;
+    $("nowPlaying").textContent = "Finished all " + auditionOrder.length + ".";
     return;
   }
-  const onlyNat = $("naturalOnly").checked;
-  const list = voices.filter(v => !onlyNat || isNatural(v))
-                     .sort((a, b) => (isNatural(b) - isNatural(a)) ||
-                                     (b.lang.startsWith("en") - a.lang.startsWith("en")) ||
-                                     a.name.localeCompare(b.name));
+  const v = auditionOrder[auditionAt];
+  const row = document.querySelector('.v[data-name="' + CSS.escape(v.name) + '"]');
+  speak(v, row, () => setTimeout(nextInAudition, 260));
+}
+document.addEventListener("keydown", e => {
+  const tag = (e.target.tagName || "").toLowerCase();
+  if (tag === "input" || tag === "textarea" || tag === "select") return;
+  if (e.key === "Escape") { stopAll(); return; }
+  if (!auditioning || auditionAt < 0) return;
+  if (e.key === "s" || e.key === "S") {
+    e.preventDefault();
+    const v = auditionOrder[auditionAt];
+    starred.has(v.name) ? starred.delete(v.name) : starred.add(v.name);
+    render(); updateShortlist();
+  } else if (e.key === "ArrowRight") {
+    e.preventDefault();
+    if (TTS) TTS.cancel();          // onend fires -> moves on
+  }
+});
+
+function render() {
+  if (!TTS) { $("noVoices").style.display = ""; $("noVoices").textContent = "This browser has no speech voices."; return; }
+  const list = filtered();
   const wrap = $("vlist");
   wrap.replaceChildren();
 
-  const nat = voices.filter(isNatural).length;
-  $("noVoices").style.display = (!nat && onlyNat) ? "" : "none";
-  if (!nat && onlyNat) {
+  const anyNatural = voices.some(isNatural);
+  $("noVoices").style.display = (!anyNatural && $("fQuality").value === "natural") ? "" : "none";
+  if (!anyNatural && $("fQuality").value === "natural") {
     $("noVoices").innerHTML = "No natural-sounding voices in <b>this</b> browser. " +
-      "Open this same page in <b>Microsoft Edge</b> — Edge has free “Natural” voices that Chrome doesn't.";
+      "Open this page in <b>Microsoft Edge</b> — it has hundreds that Chrome doesn't.";
   }
 
   list.forEach(v => {
     const row = document.createElement("div");
     row.className = "v" + (starred.has(v.name) ? " starred" : "");
+    row.dataset.name = v.name;
 
     const star = document.createElement("button");
     star.className = "star" + (starred.has(v.name) ? " on" : "");
     star.textContent = starred.has(v.name) ? "★" : "☆";
-    star.title = "Star this voice";
     star.setAttribute("aria-label", "Star " + v.name);
     star.addEventListener("click", () => {
       starred.has(v.name) ? starred.delete(v.name) : starred.add(v.name);
@@ -197,14 +386,15 @@ function render() {
     const name = document.createElement("div");
     name.className = "vname";
     const b = document.createElement("b");
-    b.textContent = v.name.replace(/^Microsoft /, "");
+    b.textContent = v.name.replace(/^Microsoft /, "").replace(/\s*\(Natural\)/i, "");
     const s = document.createElement("span");
     s.textContent = v.lang;
     name.append(b, s);
 
+    const g = genderOf(v);
     const tag = document.createElement("span");
-    tag.className = "tag" + (v.localService ? " local" : "");
-    tag.textContent = isNatural(v) ? "natural" : (v.localService ? "basic" : "online");
+    tag.className = "tag " + (g === "?" ? "" : g);
+    tag.textContent = g === "m" ? "male" : g === "f" ? "female" : "?";
 
     const hear = document.createElement("button");
     hear.textContent = "Hear it";
@@ -217,18 +407,18 @@ function render() {
     ab.addEventListener("click", () => {
       stopAll();
       if (!ref.src) { speak(v, row); return; }
-      ref.currentTime = 0;
-      ref.play().catch(()=>{});
-      const wait = Math.min(6, isFinite(ref.duration) ? ref.duration : 6) * 1000 + 350;
-      abTimer = setTimeout(() => { ref.pause(); speak(v, row); }, wait);
+      ref.currentTime = 0; ref.play().catch(()=>{});
+      const wait = Math.min(6, isFinite(ref.duration) ? ref.duration : 6) * 1000 + 300;
+      setTimeout(() => { ref.pause(); speak(v, row); }, wait);
     });
 
     row.append(star, name, tag, hear, ab);
     wrap.appendChild(row);
   });
 
-  $("count").innerHTML = "Showing <b>" + list.length + "</b> of " + voices.length +
-                         " voices" + (nat ? " · <b>" + nat + "</b> natural-sounding" : "");
+  const cut = voices.length - list.length;
+  $("count").innerHTML = "<b>" + list.length + "</b> to listen to" +
+    (cut > 0 ? " · <span class='cut'>" + cut + " of " + voices.length + " filtered out</span>" : "");
   updateShortlist();
 }
 
@@ -240,5 +430,5 @@ function updateShortlist() {
 }
 
 window.addEventListener("beforeunload", () => { if (TTS) TTS.cancel(); });
-window.__vm = { get voices() { return voices; }, isNatural, render, starred };
+window.__vm = { get voices(){return voices;}, genderOf, isNatural, firstName, filtered, render, starred, analysePitch };
 </script>
