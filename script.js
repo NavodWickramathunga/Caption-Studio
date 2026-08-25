@@ -1267,11 +1267,20 @@ async function callGeminiApi(promptText, audioBlob = null, jsonSchema = null) {
 /* Google retires model names on their own schedule, so ask the key which
    models it can actually reach rather than hardcoding one that goes stale.
    Resolved once per page load, then reused. */
+/* Try this one first. Older keys can still use it; keys made after Google's
+   cut-off get refused, and the caller then falls through to a current model
+   automatically. Set to null to always take the newest available instead. */
+const PREFERRED_MODEL = "gemini-2.5-flash";
+
 let GEMINI_MODEL = null;
 const GEMINI_REJECTED = new Set();   // models this key was refused, so we stop offering them
 
 async function resolveGeminiModel(apiKey) {
   if (GEMINI_MODEL) return GEMINI_MODEL;
+  if (PREFERRED_MODEL && !GEMINI_REJECTED.has(PREFERRED_MODEL)) {
+    GEMINI_MODEL = PREFERRED_MODEL;
+    return GEMINI_MODEL;
+  }
   const ver  = s => { const m = s.match(/(\d+(?:\.\d+)?)/); return m ? parseFloat(m[1]) : 0; };
   const lite = s => /lite/i.test(s) ? 1 : 0;
   const prev = s => /preview|exp/i.test(s) ? 1 : 0;
