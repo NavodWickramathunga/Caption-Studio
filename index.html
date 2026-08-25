@@ -191,10 +191,27 @@
     <h2><i>5</i>Save your work</h2>
   </div>
   <div style="padding:18px;" class="exports">
-    <button id="btnExportAss">Save .ASS captions<small>Recommended for ffmpeg burn-in with word highlights</small></button>
-    <button id="btnExportSrt">Save .SRT captions<small>Standard cue file for TikTok / YouTube Shorts</small></button>
+    <button id="btnExportAss">Save .ASS captions<small>Word highlights · burn in with ffmpeg</small></button>
+    <button id="btnExportSrt">Save .SRT captions<small>TikTok / YouTube Shorts</small></button>
+    <button id="btnExportFbSrt">Save captions for Facebook<small>Named the way Facebook demands</small></button>
     <button id="btnExportJson">Save .JSON timings<small>Raw word timestamps array</small></button>
-    <button id="btnExportWebm" class="primary">Burn into .WEBM video<small>Record video with captions in browser</small></button>
+    <button id="btnExportWebm" class="primary wide">Burn into .WEBM video<small>Record video with captions in browser</small></button>
+  </div>
+
+  <div style="margin:0 18px 18px; padding:12px 14px; border:1px solid var(--line); border-radius:9px; background:var(--panel-2); font-size:12.5px; line-height:1.6; color:var(--ivory-dim)">
+    <b style="color:var(--ivory)">Posting to Facebook?</b>
+    Facebook only accepts <b>.SRT</b>, and only if the filename ends in <code>.en_US.srt</code> —
+    the button above does that for you. Upload the video first, then add the caption file to the same post.
+    <br><br>
+    <b style="color:var(--ivory)">Reels won't take .webm.</b>
+    Facebook wants MP4 (H.264 + AAC), 1080×1920, up to 90 seconds. Convert the recording with:
+    <br>
+    <code style="display:inline-block;margin-top:6px">ffmpeg -i captioned.webm -c:v libx264 -preset slow -crf 20 -pix_fmt yuv420p -c:a aac -b:a 128k -vf "scale=1080:1920" out.mp4</code>
+    <br><br>
+    Better still, skip the recording: burn the <b>.ASS</b> captions straight onto your original clip —
+    sharper text and no quality lost to re-encoding.
+    <br>
+    <code style="display:inline-block;margin-top:6px">ffmpeg -i clip.mp4 -vf "ass=captions.ass" -c:v libx264 -crf 20 -pix_fmt yuv420p -c:a aac out.mp4</code>
   </div>
 </section>
 

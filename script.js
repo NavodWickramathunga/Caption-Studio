@@ -1008,6 +1008,20 @@ bindExportBtn("expAss", "btnExportAss", () => { download(baseName() + ".ass", bu
 bindExportBtn("expSrt", "btnExportSrt", () => { download(baseName() + ".srt", buildSRT()); say("Saved " + baseName() + ".srt", "ok"); });
 bindExportBtn("expJson", "btnExportJson", () => { download(baseName() + ".json", buildJSON(), "application/json"); say("Saved " + baseName() + ".json", "ok"); });
 
+/* Facebook rejects a caption file unless the name ends in .<lang>_<COUNTRY>.srt -
+   lower-case language, upper-case country. Same subtitles, fussy filename. */
+const FB_LOCALE = "en_US";
+function facebookSrtName() {
+  // strip anything that already looks like a locale suffix so it can't double up
+  const base = baseName().replace(/\.[a-z]{2}_[A-Z]{2}$/, "");
+  return base + "." + FB_LOCALE + ".srt";
+}
+bindExportBtn("expFbSrt", "btnExportFbSrt", () => {
+  const name = facebookSrtName();
+  download(name, buildSRT());
+  say("Saved " + name + " — upload your video to Facebook first, then add this file to the same post.", "ok");
+});
+
 function say(msg, kind) {
   const el = $("exportStatus");
   if (el) {
@@ -1018,7 +1032,8 @@ function say(msg, kind) {
 
 function refreshExports() {
   const ok = allTimed();
-  ["expAss", "btnExportAss", "expSrt", "btnExportSrt", "expJson", "btnExportJson", "expBurn", "btnExportWebm"].forEach(id => {
+  ["expAss", "btnExportAss", "expSrt", "btnExportSrt", "expFbSrt", "btnExportFbSrt",
+   "expJson", "btnExportJson", "expBurn", "btnExportWebm"].forEach(id => {
     if ($(id)) $(id).disabled = !ok || S.recording;
   });
   if (S.recording) return;
