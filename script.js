@@ -304,6 +304,7 @@ function closeFinalWord() {
 const TTS = window.speechSynthesis;
 const CAN_SPEAK = !!(TTS && window.SpeechSynthesisUtterance);
 let voices = [], utter = null, speakRun = null;
+let savedVoiceApplied = false;   // the Voice Match pick is applied once, then you're in charge
 
 function loadVoices() {
   if (!CAN_SPEAK) return;
@@ -348,34 +349,42 @@ function loadVoices() {
   } else {
     plain.forEach(o => addTo(sel, o));
   }
-  if (keep && sel.querySelector('option[value="' + keep + '"]')) sel.value = keep;
-  else {
-    // A voice chosen over in Voice Match becomes the one we start with.
+  /* The voice chosen in Voice Match wins the first time the list is built.
+     After that, whatever is selected is respected - including when this
+     function re-runs because the browser reported more voices. */
+  let applied = false;
+  if (!savedVoiceApplied) {
     let saved = null;
     try { saved = localStorage.getItem("captionStudio.voice"); } catch (e) {}
     if (saved && $("savedVoice")) {
       const idx = voices.findIndex(v => v.name === saved);
       if (idx < 0) {
+        savedVoiceApplied = true;
         $("savedVoice").style.display = "";
         $("savedVoice").style.color = "#e0b341";
         $("savedVoice").textContent = "“" + saved.replace(/^Microsoft /, "") +
           "” was picked in Voice Match but isn't installed in this browser. " +
           "Open this page in the browser you chose it in.";
       } else if (!voices[idx].localService && localOnly) {
-        // The natural voices are online ones. Don't let the offline filter
-        // silently swallow the choice - turn it off and rebuild the list.
+        // Natural voices are online ones, so the offline filter would hide
+        // the choice. Turn it off and rebuild rather than dropping it.
         $("localOnly").checked = false;
         $("netWarn").style.display = "";
         loadVoices();
         return;
       } else if (sel.querySelector('option[value="' + idx + '"]')) {
         sel.value = String(idx);
+        applied = true;
+        savedVoiceApplied = true;
         $("savedVoice").style.display = "";
         $("savedVoice").style.color = "#7fc9a4";
         $("savedVoice").textContent = "Using " + saved.replace(/^Microsoft /, "") + ", picked in Voice Match.";
       }
+    } else if (!saved) {
+      savedVoiceApplied = true;   // nothing saved, so stop looking
     }
   }
+  if (!applied && keep && sel.querySelector('option[value="' + keep + '"]')) sel.value = keep;
 
   $("edgeTip").style.display = (!natural.length && localOnly) ? "" : "none";
   setVoStatus(natural.length ? natural.length + " natural-sounding voices available." : "");
