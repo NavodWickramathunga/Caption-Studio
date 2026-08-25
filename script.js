@@ -1227,7 +1227,8 @@ async function callGeminiApi(promptText, audioBlob = null, jsonSchema = null) {
     };
   }
 
-  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+  const model = await resolveGeminiModel(apiKey);
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
   const res = await fetch(endpoint, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -1236,7 +1237,14 @@ async function callGeminiApi(promptText, audioBlob = null, jsonSchema = null) {
 
   if (!res.ok) {
     const errData = await res.json().catch(() => ({}));
-    throw new Error(errData.error?.message || `Gemini API HTTP Error ${res.status}`);
+    const msg = errData.error?.message || "";
+    if (res.status === 404) {
+      GEMINI_MODEL = null;   // model retired underneath us - re-resolve next time
+      throw new Error(`The model "${model}" is no longer available. Try again and a current one will be picked.`);
+    }
+    if (res.status === 429) throw new Error("Free-tier rate limit reached. Wait a minute and try again.");
+    if (res.status === 400 && /API key/i.test(msg)) throw new Error("That API key was rejected. Open the key dialog and paste a fresh one.");
+    throw new Error(msg || `Gemini API HTTP Error ${res.status}`);
   }
 
   const data = await res.json();
@@ -1244,6 +1252,38 @@ async function callGeminiApi(promptText, audioBlob = null, jsonSchema = null) {
   if (!resText) throw new Error("Empty response from Gemini API");
 
   return jsonSchema ? JSON.parse(resText) : resText.trim();
+}
+
+/* Google retires model names on their own schedule, so ask the key which
+   models it can actually reach rather than hardcoding one that goes stale.
+   Resolved once per page load, then reused. */
+let GEMINI_MODEL = null;
+
+async function resolveGeminiModel(apiKey) {
+  if (GEMINI_MODEL) return GEMINI_MODEL;
+  try {
+    const r = await fetch("https://generativelanguage.googleapis.com/v1beta/models?key=" + encodeURIComponent(apiKey));
+    if (r.ok) {
+      const j = await r.json();
+      const usable = (j.models || []).filter(m =>
+        (m.supportedGenerationMethods || []).includes("generateContent") &&
+        /flash/i.test(m.name) &&
+        !/image|tts|embedding|live|vision/i.test(m.name));
+      if (usable.length) {
+        const ver  = s => { const m = s.match(/(\d+(?:\.\d+)?)/); return m ? parseFloat(m[1]) : 0; };
+        const lite = s => /lite/i.test(s) ? 1 : 0;
+        const prev = s => /preview|exp/i.test(s) ? 1 : 0;
+        // newest stable full Flash first
+        usable.sort((a, b) => prev(a.name) - prev(b.name) ||
+                              lite(a.name) - lite(b.name) ||
+                              ver(b.name)  - ver(a.name));
+        GEMINI_MODEL = usable[0].name.replace(/^models\//, "");
+        return GEMINI_MODEL;
+      }
+    }
+  } catch (e) { /* fall through to the default below */ }
+  GEMINI_MODEL = "gemini-flash-latest";
+  return GEMINI_MODEL;
 }
 
 async function extractAudioWav(file, maxSeconds = 300) {
