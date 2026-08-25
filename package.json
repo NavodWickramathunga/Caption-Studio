@@ -1,0 +1,13 @@
+{
+  "name": "caption-studio",
+  "version": "1.0.0",
+  "description": "Static HTML site",
+  "scripts": {
+    "dev": "node server.js",
+    "build": "echo 'No build required for static site'",
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2"
+  }
+}
