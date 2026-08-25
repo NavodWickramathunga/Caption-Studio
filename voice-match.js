@@ -219,8 +219,34 @@ if ($("apiKeyClearBtn")) {
 }
 updateApiKeyBtnState();
 
+/* A request that never comes back used to leave the status stuck forever.
+   Give it a deadline, a visible clock, and a way out. */
+const AI_TIMEOUT_MS = 90000;
+let aiAbort = null;
+let aiCancelled = false;
+
+async function fetchWithDeadline(url, opts, ms) {
+  const ctrl = new AbortController();
+  aiAbort = ctrl;
+  const timer = setTimeout(() => ctrl.abort("timeout"), ms);
+  try {
+    return await fetch(url, { ...opts, signal: ctrl.signal });
+  } finally {
+    clearTimeout(timer);
+    aiAbort = null;
+  }
+}
+
 async function analyseWithAI() {
   const st = (m, k) => { $("aiStatus").className = "aistatus" + (k ? " " + k : ""); $("aiStatus").textContent = m; };
+
+  // second press while it is running = cancel
+  if (aiAbort) {
+    aiCancelled = true;
+    aiAbort.abort("cancelled");
+    return;
+  }
+  aiCancelled = false;
   if (!refFile) return st("Load a clip in step 1 first.", "err");
 
   const candidates = voices.filter(v => v.lang.toLowerCase().startsWith("en"));
@@ -235,13 +261,24 @@ async function analyseWithAI() {
     return st("Please set your Gemini API key in the settings modal.", "err");
   }
 
-  $("analyse").disabled = true;
+  const wasLabel = $("analyse").textContent;
+  $("analyse").textContent = "Stop";
   $("aiOut").replaceChildren();
+  let ticker = null;
   try {
-    st("Extracting audio clip...");
-    const wav = await extractAudioWav(refFile, 60);
+    st("Reading the sound out of your clip…");
+    // 20 seconds is plenty to judge a voice, and keeps the upload small
+    const wav = await extractAudioWav(refFile, 20);
     const b64 = await toBase64(wav.blob);
-    st("Asking Gemini to analyze voice characteristics...");
+    const kb = Math.round(wav.blob.size / 1024);
+
+    const t0 = Date.now();
+    const tick = () => {
+      const s = Math.round((Date.now() - t0) / 1000);
+      st(`Sent ${kb} KB to Gemini — waiting ${s}s… (press Stop to give up)`);
+    };
+    tick();
+    ticker = setInterval(tick, 1000);
 
     const promptText = `Analyze the speaker's vocal characteristics (gender, pitch, tone, energy level) in this audio clip. Available TTS voice choices: ${candidates.map(v => v.name).join(", ")}.`;
     const body = JSON.stringify({
@@ -264,9 +301,11 @@ async function analyseWithAI() {
     let res, model;
     for (let attempt = 0; attempt < 2; attempt++) {
       model = await pickModel(activeKey);
-      res = await fetch(`${API}/models/${model}:generateContent?key=${encodeURIComponent(activeKey)}`, {
-        method: "POST", headers: { "Content-Type": "application/json" }, body
-      });
+      res = await fetchWithDeadline(
+        `${API}/models/${model}:generateContent?key=${encodeURIComponent(activeKey)}`,
+        { method: "POST", headers: { "Content-Type": "application/json" }, body },
+        AI_TIMEOUT_MS
+      );
       if (res.ok) break;
 
       const err = await res.json().catch(() => ({}));
@@ -291,9 +330,23 @@ async function analyseWithAI() {
     renderAI(responseObj, candidates);
     st("Analysis complete!", "ok");
   } catch (e) {
-    st(String(e.message || e), "err");
+    const why = String((e && e.message) || e);
+    const aborted = (e && e.name === "AbortError") || /abort/i.test(why);
+    if (aborted && aiCancelled) {
+      st("Stopped.");
+    } else if (aborted) {
+      st(`Gemini didn't answer within ${AI_TIMEOUT_MS / 1000}s. Your network may be blocking it — ` +
+         `try again, or skip the AI and use "Play them all" below.`, "err");
+    } else if (/Failed to fetch|NetworkError|network/i.test(why)) {
+      st('Couldn\'t reach Google at all. Check your connection, or skip the AI and use "Play them all" below.', "err");
+    } else {
+      st(why, "err");
+    }
   } finally {
+    if (ticker) clearInterval(ticker);
+    aiAbort = null;
     $("analyse").disabled = false;
+    $("analyse").textContent = wasLabel;
   }
 }
 

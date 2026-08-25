@@ -1233,10 +1233,22 @@ async function callGeminiApi(promptText, audioBlob = null, jsonSchema = null) {
   let res, model, lastMsg = "";
   for (let attempt = 0; attempt < 2; attempt++) {
     model = await resolveGeminiModel(apiKey);
-    res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
-      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(reqBody) }
-    );
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort("timeout"), 90000);
+    try {
+      res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+        { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(reqBody), signal: ctrl.signal }
+      );
+    } catch (netErr) {
+      if (netErr && netErr.name === "AbortError") {
+        throw new Error("Gemini didn't answer within 90s. Your network may be blocking it — try again.");
+      }
+      throw new Error("Couldn't reach Google. Check your connection and try again.");
+    } finally {
+      clearTimeout(timer);
+    }
     if (res.ok) break;
 
     const errData = await res.json().catch(() => ({}));
