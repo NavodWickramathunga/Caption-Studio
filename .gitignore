@@ -1,0 +1,17 @@
+# Windows / OneDrive
+Thumbs.db
+desktop.ini
+ehthumbs.db
+$RECYCLE.BIN/
+*.tmp
+
+# macOS
+.DS_Store
+
+# Working media - keep clips and voiceovers out of the repo
+*.mp4
+*.mov
+*.webm
+*.mp3
+*.wav
+*.m4a

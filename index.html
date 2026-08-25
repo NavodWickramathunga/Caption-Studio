@@ -1,0 +1,960 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Caption Studio</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Anton&family=JetBrains+Mono:wght@400;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --ground:#0c1117;
+  --panel:#121b24;
+  --panel-2:#18232f;
+  --line:#243342;
+  --line-soft:#1c2733;
+  --ivory:#efe7d9;
+  --ivory-dim:#93a2b0;
+  --ivory-faint:#5d6d7c;
+  --rose:#dd5f77;
+  --rose-deep:#a63c53;
+  --vein:#5b93d6;
+  --vein-deep:#31537c;
+  --caption-yellow:#ffd400;
+  --radius:10px;
+  --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Consolas,monospace;
+  --display:"Anton","Arial Narrow",Impact,Haettenschweiler,sans-serif;
+  --ui:"Inter",-apple-system,"Segoe UI",system-ui,sans-serif;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0;background:var(--ground);color:var(--ivory);
+  font-family:var(--ui);font-size:14px;line-height:1.5;
+  -webkit-font-smoothing:antialiased;
+}
+body::before{
+  content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
+  background:
+    radial-gradient(900px 600px at 12% -10%, rgba(221,95,119,.10), transparent 60%),
+    radial-gradient(800px 700px at 105% 20%, rgba(91,147,214,.09), transparent 60%);
+}
+.app{position:relative;z-index:1;display:flex;flex-direction:column;min-height:100vh}
+
+/* ---------- header ---------- */
+.topbar{
+  display:flex;align-items:baseline;gap:16px;flex-wrap:wrap;
+  padding:18px 26px 14px;border-bottom:1px solid var(--line-soft);
+}
+.topbar h1{
+  font-family:var(--display);font-weight:400;font-size:27px;letter-spacing:.055em;
+  text-transform:uppercase;margin:0;color:var(--ivory);
+}
+.topbar h1 em{font-style:normal;color:var(--rose)}
+.topbar p{margin:0;color:var(--ivory-dim);font-size:12.5px}
+.privacy{
+  margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--ivory-faint);
+  border:1px solid var(--line);border-radius:999px;padding:4px 11px;white-space:nowrap;
+}
+
+/* ---------- main grid ---------- */
+main{
+  display:grid;grid-template-columns:minmax(300px,1fr) minmax(380px,440px);
+  gap:22px;padding:22px 26px;align-items:start;flex:1;
+}
+
+/* ---------- stage ---------- */
+.stage-col{position:sticky;top:22px;display:flex;flex-direction:column;gap:12px}
+.frame{
+  position:relative;width:100%;max-width:420px;margin:0 auto;aspect-ratio:9/16;
+  background:#05080b;border:1px solid var(--line);border-radius:14px;overflow:hidden;
+  box-shadow:0 24px 60px -30px rgba(0,0,0,.9);
+}
+.frame video{position:absolute;inset:0;z-index:0;width:100%;height:100%;object-fit:contain;background:#05080b}
+.frame canvas{position:absolute;inset:0;z-index:1;width:100%;height:100%;pointer-events:none}
+.frame .empty{
+  position:absolute;inset:0;z-index:2;display:flex;flex-direction:column;gap:8px;
+  align-items:center;justify-content:center;text-align:center;padding:30px;color:var(--ivory-faint);
+}
+.frame .empty strong{
+  display:block;font-family:var(--display);font-size:16px;letter-spacing:.06em;
+  text-transform:uppercase;color:var(--ivory-dim);
+}
+.frame .empty span{font-size:12.5px;max-width:230px}
+.transport{
+  display:flex;align-items:center;gap:10px;justify-content:center;flex-wrap:wrap;
+  max-width:420px;margin:0 auto;width:100%;
+}
+.clock{font-family:var(--mono);font-size:12px;color:var(--ivory-dim);min-width:104px;text-align:center}
+.clock b{color:var(--ivory);font-weight:600}
+
+/* ---------- panels ---------- */
+.steps{display:flex;flex-direction:column;gap:14px}
+.step{
+  background:var(--panel);border:1px solid var(--line-soft);border-radius:var(--radius);
+  padding:15px 16px 16px;
+}
+.step > h2{
+  display:flex;align-items:center;gap:9px;margin:0 0 4px;
+  font-family:var(--display);font-weight:400;font-size:14px;letter-spacing:.075em;
+  text-transform:uppercase;color:var(--ivory);
+}
+.step > h2 i{
+  font-style:normal;font-family:var(--mono);font-size:11px;font-weight:600;
+  width:21px;height:21px;flex:none;display:grid;place-items:center;border-radius:5px;
+  background:var(--vein-deep);color:#dbe9fb;letter-spacing:0;
+}
+.optional{font-family:var(--ui);font-size:11px;letter-spacing:0;text-transform:none;color:var(--ivory-dim)}
+.hint{color:var(--ivory-dim);font-size:12.5px;margin:0 0 11px}
+.hint code{font-family:var(--mono);font-size:11.5px;background:var(--panel-2);border:1px solid var(--line);border-radius:4px;padding:1px 5px;color:var(--ivory)}
+
+/* ---------- controls ---------- */
+button,.filebtn{
+  font:inherit;font-size:13px;font-weight:500;color:var(--ivory);
+  background:var(--panel-2);border:1px solid var(--line);border-radius:8px;
+  padding:8px 13px;cursor:pointer;transition:background .12s,border-color .12s,transform .08s;
+}
+button:hover:not(:disabled),.filebtn:hover{background:#1f2d3b;border-color:#31465a}
+button:active:not(:disabled){transform:translateY(1px)}
+button:disabled{opacity:.36;cursor:not-allowed}
+button.primary{background:var(--rose-deep);border-color:#c04d67;color:#ffeef1}
+button.primary:hover:not(:disabled){background:#bd4a62}
+button.ghost{background:transparent}
+.filebtn{display:inline-flex;align-items:center;gap:8px;position:relative}
+.filebtn input{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}
+:focus-visible{outline:2px solid var(--vein);outline-offset:2px;border-radius:6px}
+.filebtn:focus-within{outline:2px solid var(--vein);outline-offset:2px}
+
+.filerow{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.filename{font-family:var(--mono);font-size:11.5px;color:var(--ivory-dim);word-break:break-all;flex:1;min-width:120px}
+.filename.none{color:var(--ivory-faint)}
+
+textarea{
+  width:100%;min-height:96px;resize:vertical;font:inherit;font-size:13px;line-height:1.6;
+  background:var(--panel-2);color:var(--ivory);border:1px solid var(--line);
+  border-radius:8px;padding:10px 11px;
+}
+textarea::placeholder{color:var(--ivory-faint)}
+
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px 14px}
+.field{display:flex;flex-direction:column;gap:5px}
+.field > label{
+  font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--ivory-dim);
+  display:flex;justify-content:space-between;gap:8px;align-items:baseline;
+}
+.field > label b{font-family:var(--mono);font-size:11px;font-weight:600;color:var(--ivory)}
+input[type=range]{width:100%;accent-color:var(--rose);background:transparent;height:20px}
+.swatches{display:flex;gap:7px;flex-wrap:wrap}
+.swatch{
+  width:26px;height:26px;border-radius:7px;border:2px solid transparent;
+  box-shadow:inset 0 0 0 1px rgba(0,0,0,.5);cursor:pointer;padding:0;background-clip:padding-box;
+}
+.swatch[aria-pressed="true"]{border-color:var(--ivory)}
+
+/* ---------- tap strip ---------- */
+.tapzone{
+  margin:0 26px 26px;background:var(--panel);
+  border:1px solid var(--line);border-radius:14px;overflow:hidden;
+}
+.tapbar{
+  display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:13px 18px;
+  border-bottom:1px solid var(--line-soft);background:linear-gradient(180deg,rgba(221,95,119,.06),transparent);
+}
+.tapbar h2{
+  font-family:var(--display);font-weight:400;font-size:15px;letter-spacing:.075em;
+  text-transform:uppercase;margin:0;display:flex;align-items:center;gap:9px;
+}
+.tapbar h2 i{
+  font-style:normal;font-family:var(--mono);font-size:11px;font-weight:600;
+  width:21px;height:21px;display:grid;place-items:center;border-radius:5px;
+  background:var(--rose-deep);color:#ffe4ea;letter-spacing:0;
+}
+.keys{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--ivory-dim);margin-left:auto}
+.keys span{display:inline-flex;align-items:center;gap:6px}
+kbd{
+  font-family:var(--mono);font-size:10.5px;background:var(--panel-2);color:var(--ivory);
+  border:1px solid var(--line);border-bottom-width:2px;border-radius:5px;padding:2px 6px;
+}
+.progress-line{height:2px;background:var(--line-soft)}
+.progress-line b{display:block;height:100%;width:0;background:var(--rose);transition:width .15s}
+
+.chips{display:flex;gap:9px;overflow-x:auto;padding:20px 18px 18px;scroll-behavior:smooth;min-height:112px;align-items:flex-start}
+.chips.empty-state{align-items:center;justify-content:center;color:var(--ivory-faint);font-size:13px;text-align:center}
+.chip{
+  position:relative;flex:none;display:flex;flex-direction:column;align-items:center;gap:6px;
+  background:var(--panel-2);border:1px solid var(--line);border-radius:9px;
+  padding:11px 13px 8px;cursor:pointer;transition:background .12s,border-color .12s,color .12s;
+  color:var(--ivory-faint);font-family:var(--display);letter-spacing:.05em;font-size:16px;
+  text-transform:uppercase;min-width:62px;
+}
+.chip:hover{border-color:#31465a}
+.chip .t{font-family:var(--mono);font-size:10.5px;letter-spacing:0;color:var(--ivory-faint);font-weight:600}
+.chip.done{color:var(--ivory);background:#182a23;border-color:#2c4a3c}
+.chip.done .t{color:#7fc9a4}
+.chip.now{
+  color:var(--ivory);background:#2a1a20;border-color:var(--rose);
+  box-shadow:0 0 0 3px rgba(221,95,119,.16);
+}
+.chip.now .t{color:var(--rose)}
+.chip.now::before{
+  content:"";position:absolute;top:-9px;left:50%;transform:translateX(-50%);
+  border:5px solid transparent;border-top-color:var(--rose);
+}
+.chip.now::after{
+  content:"";position:absolute;left:0;right:0;bottom:-1px;height:2px;background:var(--rose);
+  animation:pulse 1.4s ease-in-out infinite;
+}
+@keyframes pulse{0%,100%{opacity:.35}50%{opacity:1}}
+
+/* ---------- export ---------- */
+.exports{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+.exports button{text-align:left;line-height:1.35;padding:10px 12px}
+.exports button small{display:block;font-family:var(--mono);font-size:10px;color:var(--ivory-dim);margin-top:2px;font-weight:400}
+.exports .wide{grid-column:1/-1}
+.status{
+  margin-top:11px;font-family:var(--mono);font-size:11.5px;color:var(--ivory-dim);
+  min-height:17px;
+}
+.status.warn{color:var(--rose)}
+.status.ok{color:#7fc9a4}
+
+.footnote{padding:0 26px 26px;color:var(--ivory-faint);font-size:11.5px;max-width:920px}
+.footnote code{font-family:var(--mono);font-size:11px;color:var(--ivory-dim)}
+
+@media (max-width:900px){
+  main{grid-template-columns:1fr}
+  .stage-col{position:static}
+  .keys{margin-left:0;width:100%}
+  .tapzone{margin:0 16px 20px}
+  main{padding:16px}
+  .topbar{padding:16px}
+}
+@media (prefers-reduced-motion:reduce){
+  *{animation:none!important;transition:none!important;scroll-behavior:auto!important}
+}
+</style>
+
+<div class="app">
+<div class="topbar">
+  <h1>Caption <em>Studio</em></h1>
+  <p>Karaoke captions for vertical clips — tapped in by hand.</p>
+  <div class="privacy">Runs offline · nothing is uploaded</div>
+</div>
+
+<main>
+  <!-- ============ STAGE ============ -->
+  <div class="stage-col">
+    <div class="frame">
+      <video id="video" playsinline></video>
+      <canvas id="overlay"></canvas>
+      <div class="empty" id="stageEmpty">
+        <strong>No video yet</strong>
+        <span>Start with step 1 — choose the clip you want to caption.</span>
+      </div>
+    </div>
+    <div class="transport">
+      <button id="playBtn" disabled>Play</button>
+      <button id="restartBtn" class="ghost" disabled>Back to start</button>
+      <div class="clock"><b id="tNow">0:00.00</b> / <span id="tEnd">0:00.00</span></div>
+    </div>
+    <audio id="audio" style="display:none"></audio>
+  </div>
+
+  <!-- ============ STEPS ============ -->
+  <div class="steps">
+
+    <section class="step">
+      <h2><i>1</i>Choose your video</h2>
+      <p class="hint">A vertical clip from disk. It never leaves this machine.</p>
+      <div class="filerow">
+        <label class="filebtn">Choose video…<input type="file" id="videoFile" accept="video/*"></label>
+        <span class="filename none" id="videoName">nothing loaded</span>
+      </div>
+    </section>
+
+    <section class="step">
+      <h2><i>2</i>Add your voiceover <span class="optional">— optional</span></h2>
+      <p class="hint">If your narration is a separate file, load it here. The video's own sound is muted and the two play as one.</p>
+      <div class="filerow">
+        <label class="filebtn">Choose audio…<input type="file" id="audioFile" accept="audio/*"></label>
+        <span class="filename none" id="audioName">using the video's own audio</span>
+        <button id="clearAudio" class="ghost" style="display:none">Remove</button>
+      </div>
+    </section>
+
+    <section class="step">
+      <h2><i>3</i>Paste your script</h2>
+      <p class="hint">Plain text. Punctuation is dropped from the captions, word order is kept exactly.</p>
+      <textarea id="script" placeholder="Your thyroid sits at the base of your neck. It runs on iodine — and most people never think about it."></textarea>
+      <p class="hint" id="wordCount" style="margin:8px 0 0">No words yet.</p>
+    </section>
+
+    <section class="step">
+      <h2><i>5</i>Set the look</h2>
+      <div class="grid2">
+        <div class="field">
+          <label for="wps">Words on screen <b id="wpsVal">3</b></label>
+          <input type="range" id="wps" min="1" max="5" step="1" value="3">
+        </div>
+        <div class="field">
+          <label for="size">Text size <b id="sizeVal">8.5%</b></label>
+          <input type="range" id="size" min="4" max="16" step="0.25" value="8.5">
+        </div>
+        <div class="field">
+          <label for="pos">Height on frame <b id="posVal">72%</b></label>
+          <input type="range" id="pos" min="10" max="92" step="1" value="72">
+        </div>
+        <div class="field">
+          <label id="swLabel">Spoken word colour</label>
+          <div class="swatches" id="swatches" role="group" aria-labelledby="swLabel"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="step">
+      <h2><i>6</i>Save your work</h2>
+      <p class="hint">Buttons unlock once every word has a start and an end.</p>
+      <div class="exports">
+        <button id="expAss" disabled>Subtitle file (.ass)<small>karaoke colours · for ffmpeg</small></button>
+        <button id="expSrt" disabled>Plain subtitles (.srt)<small>for platform captions</small></button>
+        <button id="expJson" disabled>Timings (.json)<small>reuse them later</small></button>
+        <button id="expBurn" class="primary wide" disabled>Save video with captions burned in<small>records in real time · .webm</small></button>
+      </div>
+      <div class="status" id="exportStatus" role="status" aria-live="polite"></div>
+    </section>
+
+  </div>
+</main>
+
+<!-- ============ TAP STRIP ============ -->
+<section class="tapzone">
+  <div class="tapbar">
+    <h2><i>4</i>Tap the words in</h2>
+    <div class="keys">
+      <span><kbd>Space</kbd> mark this word</span>
+      <span><kbd>Backspace</kbd> undo one</span>
+      <span><kbd>R</kbd> start over</span>
+      <span><kbd>Click a word</kbd> re-do from there</span>
+    </div>
+  </div>
+  <div class="progress-line"><b id="tapProgress"></b></div>
+  <div class="chips empty-state" id="chips">Paste a script in step 3, press Play, then hit Space on every word you hear.</div>
+</section>
+
+<div class="footnote">
+  <strong style="color:var(--ivory-dim)">Burning in with ffmpeg:</strong>
+  <code>ffmpeg -i clip.mp4 -vf "ass=captions.ass" -c:a copy out.mp4</code> —
+  the .ass file asks for the Anton font, so Anton needs to be installed on whichever machine runs ffmpeg.
+</div>
+</div>
+
+<script>
+"use strict";
+
+/* ============================================================
+   State
+   ============================================================ */
+const S = {
+  words: [],            // {raw, text, start, end}
+  wps: 3,
+  sizePct: 8.5,
+  posPct: 72,
+  hlColor: "#FFD400",
+  hasAudio: false,
+  videoName: "",
+  recording: false
+};
+
+const COLORS = [
+  ["#FFD400", "Caption yellow"],
+  ["#5CE08A", "Mint"],
+  ["#41D6EE", "Cyan"],
+  ["#FF5C7A", "Rose"],
+  ["#FFFFFF", "White"]
+];
+
+const FONT_STACK = 'Anton, "Arial Narrow", Impact, Haettenschweiler, sans-serif';
+
+const $ = id => document.getElementById(id);
+const video = $("video"), audio = $("audio"), overlay = $("overlay");
+const octx = overlay.getContext("2d");
+
+/* ============================================================
+   Media loading + A/V sync
+   ============================================================ */
+let videoURL = null, audioURL = null;
+
+$("videoFile").addEventListener("change", e => {
+  const f = e.target.files[0]; if (!f) return;
+  if (videoURL) URL.revokeObjectURL(videoURL);
+  videoURL = URL.createObjectURL(f);
+  S.videoName = f.name.replace(/\.[^.]+$/, "");
+  video.src = videoURL;
+  video.load();
+  $("videoName").textContent = f.name;
+  $("videoName").classList.remove("none");
+  $("stageEmpty").style.display = "none";
+});
+
+$("audioFile").addEventListener("change", e => {
+  const f = e.target.files[0]; if (!f) return;
+  if (audioURL) URL.revokeObjectURL(audioURL);
+  audioURL = URL.createObjectURL(f);
+  audio.src = audioURL; audio.load();
+  S.hasAudio = true; video.muted = true;
+  $("audioName").textContent = f.name;
+  $("audioName").classList.remove("none");
+  $("clearAudio").style.display = "";
+  syncTransport();
+});
+
+$("clearAudio").addEventListener("click", () => {
+  pauseAll();
+  if (audioURL) { URL.revokeObjectURL(audioURL); audioURL = null; }
+  audio.removeAttribute("src"); audio.load();
+  S.hasAudio = false; video.muted = false;
+  $("audioFile").value = "";
+  $("audioName").textContent = "using the video's own audio";
+  $("audioName").classList.add("none");
+  $("clearAudio").style.display = "none";
+  syncTransport();
+});
+
+// The element that owns the timeline. With a separate voiceover the audio leads,
+// because that is what you are tapping along to.
+const master = () => (S.hasAudio && audio.src) ? audio : video;
+const nowTime = () => master().currentTime || 0;
+const totalTime = () => {
+  const dv = isFinite(video.duration) ? video.duration : 0;
+  const da = (S.hasAudio && isFinite(audio.duration)) ? audio.duration : 0;
+  return Math.max(dv, da);
+};
+
+function playAll() {
+  if (!video.src) return;
+  video.play().catch(() => {});
+  if (S.hasAudio && audio.src) audio.play().catch(() => {});
+}
+function pauseAll() { video.pause(); if (audio.src) audio.pause(); }
+function seekAll(t) {
+  t = Math.max(0, t);
+  if (video.src && isFinite(video.duration)) video.currentTime = Math.min(t, video.duration);
+  if (S.hasAudio && audio.src && isFinite(audio.duration)) audio.currentTime = Math.min(t, audio.duration);
+}
+function togglePlay() { (master().paused) ? playAll() : pauseAll(); }
+
+$("playBtn").addEventListener("click", togglePlay);
+$("restartBtn").addEventListener("click", () => seekAll(0));
+
+video.addEventListener("loadedmetadata", () => {
+  overlay.width = video.videoWidth || 1080;
+  overlay.height = video.videoHeight || 1920;
+  syncTransport();
+});
+audio.addEventListener("loadedmetadata", syncTransport);
+[video, audio].forEach(el => {
+  el.addEventListener("play", syncTransport);
+  el.addEventListener("pause", syncTransport);
+});
+video.addEventListener("ended", closeFinalWord);
+audio.addEventListener("ended", closeFinalWord);
+
+function syncTransport() {
+  const ready = !!video.src;
+  $("playBtn").disabled = !ready;
+  $("restartBtn").disabled = !ready;
+  $("playBtn").textContent = (ready && !master().paused) ? "Pause" : "Play";
+  $("tEnd").textContent = fmtClock(totalTime());
+}
+
+/* ============================================================
+   Script parsing
+   ============================================================ */
+const scriptEl = $("script");
+let parseTimer = null;
+scriptEl.addEventListener("input", () => {
+  clearTimeout(parseTimer);
+  parseTimer = setTimeout(parseScript, 220);
+});
+
+function parseScript() {
+  const tokens = scriptEl.value.trim() ? scriptEl.value.trim().split(/\s+/) : [];
+  const next = [];
+  for (const tok of tokens) {
+    const text = tok.replace(/[^\p{L}\p{N}'’\-]/gu, "").toUpperCase();
+    if (text) next.push({ raw: tok, text, start: null, end: null });
+  }
+  // Keep timings for the unchanged leading run, so light edits don't wipe your work.
+  const old = S.words;
+  for (let i = 0; i < next.length; i++) {
+    if (old[i] && old[i].text === next[i].text) {
+      next[i].start = old[i].start; next[i].end = old[i].end;
+    } else break;
+  }
+  S.words = next;
+  renderChips();
+  const n = next.length;
+  $("wordCount").textContent = n ? (n + (n === 1 ? " word ready to sync." : " words ready to sync.")) : "No words yet.";
+}
+
+/* cursor = first word with no start; everything before it is marked. */
+function cursorIndex() {
+  for (let i = 0; i < S.words.length; i++) if (S.words[i].start === null) return i;
+  return S.words.length;
+}
+function isClosed() {
+  const n = S.words.length;
+  return n > 0 && S.words[n - 1].end !== null;
+}
+function allTimed() {
+  return S.words.length > 0 && S.words.every(w => w.start !== null && w.end !== null && w.end > w.start);
+}
+
+/* ============================================================
+   Tap to sync
+   ============================================================ */
+document.addEventListener("keydown", e => {
+  const tag = (e.target.tagName || "").toLowerCase();
+  if (tag === "textarea" || tag === "input" || e.target.isContentEditable) return;
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+
+  if (e.code === "Space") { e.preventDefault(); markWord(); }
+  else if (e.code === "Backspace") { e.preventDefault(); undoMark(); }
+  else if (e.key === "r" || e.key === "R") { e.preventDefault(); clearAll(); }
+});
+
+function markWord() {
+  if (!S.words.length) return;
+  const t = nowTime();
+  const i = cursorIndex();
+  if (i < S.words.length) {
+    if (i > 0) {
+      S.words[i - 1].end = Math.max(t, (S.words[i - 1].start || 0) + 0.02);
+      S.words[i].start = S.words[i - 1].end;
+    } else {
+      S.words[0].start = t;
+    }
+  } else if (!isClosed()) {
+    const last = S.words[S.words.length - 1];
+    last.end = Math.max(t, last.start + 0.02);
+  }
+  renderChips();
+}
+
+function undoMark() {
+  if (!S.words.length) return;
+  if (isClosed()) {
+    S.words[S.words.length - 1].end = null;
+  } else {
+    const i = cursorIndex() - 1;
+    if (i < 0) return;
+    S.words[i].start = null; S.words[i].end = null;
+    if (i - 1 >= 0) S.words[i - 1].end = null;
+  }
+  renderChips();
+}
+
+function clearAll() {
+  S.words.forEach(w => { w.start = null; w.end = null; });
+  seekAll(0);
+  renderChips();
+}
+
+function resyncFrom(k) {
+  for (let i = k; i < S.words.length; i++) { S.words[i].start = null; S.words[i].end = null; }
+  if (k - 1 >= 0) S.words[k - 1].end = null;
+  const back = (k - 1 >= 0 && S.words[k - 1].start !== null) ? S.words[k - 1].start : 0;
+  seekAll(back);
+  renderChips();
+}
+
+/* Playback ran out with the last word still open — close it at the end of the media. */
+function closeFinalWord() {
+  const n = S.words.length;
+  if (n) {
+    const last = S.words[n - 1];
+    if (last.start !== null && last.end === null) {
+      last.end = Math.max(totalTime(), last.start + 0.02);
+      renderChips();
+    }
+  }
+  syncTransport();
+}
+
+/* ============================================================
+   Chip strip
+   ============================================================ */
+const chipsEl = $("chips");
+
+function renderChips() {
+  if (!S.words.length) {
+    chipsEl.className = "chips empty-state";
+    chipsEl.textContent = "Paste a script in step 3, press Play, then hit Space on every word you hear.";
+    $("tapProgress").style.width = "0%";
+    refreshExports();
+    return;
+  }
+  chipsEl.className = "chips";
+  const cur = cursorIndex(), closed = isClosed();
+  const frag = document.createDocumentFragment();
+
+  S.words.forEach((w, i) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "chip" + (w.start !== null ? " done" : "") + ((i === cur && !closed) ? " now" : "");
+    b.title = "Re-record from “" + w.text + "” onward";
+    const label = document.createElement("span");
+    label.textContent = w.text;
+    const time = document.createElement("span");
+    time.className = "t";
+    time.textContent = w.start !== null ? w.start.toFixed(2) : "––––";
+    b.append(label, time);
+    b.addEventListener("click", () => resyncFrom(i));
+    frag.appendChild(b);
+  });
+
+  if (cur >= S.words.length && !closed) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "chip now";
+    b.title = "Tap Space once more to close the last word";
+    const l = document.createElement("span"); l.textContent = "END";
+    const t = document.createElement("span"); t.className = "t"; t.textContent = "SPACE";
+    b.append(l, t);
+    b.addEventListener("click", markWord);
+    frag.appendChild(b);
+  }
+
+  chipsEl.replaceChildren(frag);
+  const marked = S.words.filter(w => w.start !== null).length + (closed ? 1 : 0);
+  $("tapProgress").style.width = Math.round(marked / (S.words.length + 1) * 100) + "%";
+
+  const active = chipsEl.querySelector(".now");
+  if (active) active.scrollIntoView({ block: "nearest", inline: "center" });
+  refreshExports();
+}
+
+/* ============================================================
+   Style controls
+   ============================================================ */
+function bindRange(id, key, fmt) {
+  const el = $(id), out = $(id + "Val");
+  const apply = () => { S[key] = parseFloat(el.value); out.textContent = fmt(S[key]); };
+  el.addEventListener("input", apply); apply();
+}
+bindRange("wps", "wps", v => v);
+bindRange("size", "sizePct", v => String(v).replace(/\.0+$/, "") + "%");
+bindRange("pos", "posPct", v => v + "%");
+$("wps").addEventListener("input", renderChips);
+
+const swatchWrap = $("swatches");
+COLORS.forEach(([hex, name]) => {
+  const b = document.createElement("button");
+  b.type = "button"; b.className = "swatch"; b.style.background = hex;
+  b.title = name; b.setAttribute("aria-label", name);
+  b.setAttribute("aria-pressed", hex === S.hlColor ? "true" : "false");
+  b.addEventListener("click", () => {
+    S.hlColor = hex;
+    [...swatchWrap.children].forEach(c => c.setAttribute("aria-pressed", c === b ? "true" : "false"));
+  });
+  swatchWrap.appendChild(b);
+});
+
+/* ============================================================
+   Caption rendering
+   ============================================================ */
+function activeIndexAt(t) {
+  for (let i = 0; i < S.words.length; i++) {
+    const w = S.words[i];
+    if (w.start !== null && w.end !== null && t >= w.start && t < w.end) return i;
+  }
+  return -1;
+}
+
+function groupOf(i) {
+  const n = S.wps, g = Math.floor(i / n);
+  return { from: g * n, words: S.words.slice(g * n, g * n + n) };
+}
+
+function drawCaptions(ctx, W, H, t) {
+  const idx = activeIndexAt(t);
+  if (idx < 0) return;                       // between groups: show nothing
+  const g = groupOf(idx);
+  const words = g.words;
+
+  let fontPx = (S.sizePct / 100) * H;
+  const maxW = W * 0.88;
+
+  const measure = () => {
+    ctx.font = fontPx + "px " + FONT_STACK;
+    const ws = words.map(w => ctx.measureText(w.text).width);
+    const gap = fontPx * 0.28;
+    return { ws, gap, total: ws.reduce((a, b) => a + b, 0) + gap * (words.length - 1) };
+  };
+
+  let m = measure();
+  if (m.total > maxW) { fontPx *= maxW / m.total; m = measure(); }  // shrink to fit, never clip
+
+  const y = (S.posPct / 100) * H;
+  let x = (W - m.total) / 2;
+
+  ctx.save();
+  ctx.textAlign = "left";
+  ctx.textBaseline = "middle";
+  ctx.lineJoin = "round";
+  ctx.miterLimit = 2;
+  ctx.lineWidth = fontPx * 0.17;
+  ctx.strokeStyle = "#000";
+
+  words.forEach((w, k) => {
+    // the soft shadow sits under the outline only
+    ctx.shadowColor = "rgba(0,0,0,0.45)";
+    ctx.shadowBlur = fontPx * 0.14;
+    ctx.shadowOffsetY = fontPx * 0.06;
+    ctx.strokeText(w.text, x, y);
+    ctx.shadowColor = "transparent";
+    ctx.shadowBlur = 0; ctx.shadowOffsetY = 0;
+    ctx.fillStyle = (g.from + k === idx) ? S.hlColor : "#FFFFFF";
+    ctx.fillText(w.text, x, y);
+    x += m.ws[k] + m.gap;
+  });
+  ctx.restore();
+}
+
+function frameLoop() {
+  const W = overlay.width, H = overlay.height;
+  octx.clearRect(0, 0, W, H);
+  if (video.src) {
+    // keep the two elements from drifting apart
+    if (S.hasAudio && audio.src && !audio.paused && isFinite(video.duration)) {
+      if (Math.abs(video.currentTime - audio.currentTime) > 0.12 && audio.currentTime <= video.duration) {
+        video.currentTime = audio.currentTime;
+      }
+    }
+    drawCaptions(octx, W, H, nowTime());
+    $("tNow").textContent = fmtClock(nowTime());
+  }
+  requestAnimationFrame(frameLoop);
+}
+requestAnimationFrame(frameLoop);
+
+/* ============================================================
+   Formatting helpers
+   ============================================================ */
+function fmtClock(s) {
+  s = Math.max(0, s || 0);
+  const m = Math.floor(s / 60), r = s - m * 60;
+  return m + ":" + (r < 10 ? "0" : "") + r.toFixed(2);
+}
+function assTime(s) {
+  s = Math.max(0, s || 0);
+  const h = Math.floor(s / 3600); s -= h * 3600;
+  const m = Math.floor(s / 60); s -= m * 60;
+  const cs = Math.round(s * 100);
+  const ss = Math.floor(cs / 100), cc = cs % 100;
+  return h + ":" + String(m).padStart(2, "0") + ":" + String(ss).padStart(2, "0") + "." + String(cc).padStart(2, "0");
+}
+function srtTime(s) {
+  s = Math.max(0, s || 0);
+  const h = Math.floor(s / 3600); s -= h * 3600;
+  const m = Math.floor(s / 60); s -= m * 60;
+  const ms = Math.round(s * 1000);
+  const ss = Math.floor(ms / 1000), mmm = ms % 1000;
+  return String(h).padStart(2, "0") + ":" + String(m).padStart(2, "0") + ":" +
+         String(ss).padStart(2, "0") + "," + String(mmm).padStart(3, "0");
+}
+/* ASS colours are &HAABBGGRR — blue first, red last. */
+function assColor(hex) {
+  const h = hex.replace("#", "");
+  const r = h.slice(0, 2), g = h.slice(2, 4), b = h.slice(4, 6);
+  return "&H00" + (b + g + r).toUpperCase() + "&";
+}
+function download(name, data, mime) {
+  const blob = (data instanceof Blob) ? data : new Blob([data], { type: mime || "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+}
+const baseName = () => (S.videoName || "captions");
+
+/* ============================================================
+   Exports
+   ============================================================ */
+function groups() {
+  const out = [];
+  for (let i = 0; i < S.words.length; i += S.wps) out.push(S.words.slice(i, i + S.wps));
+  return out;
+}
+
+function buildASS() {
+  const W = video.videoWidth || 1080, H = video.videoHeight || 1920;
+  const fontSize = Math.round((S.sizePct / 100) * H);
+  const outline = Math.max(1, +((fontSize * 0.085).toFixed(1)));
+  const shadow = Math.max(0, +((fontSize * 0.05).toFixed(1)));
+  const x = Math.round(W / 2), y = Math.round((S.posPct / 100) * H);
+  const WHITE = "&H00FFFFFF&";
+  const HL = assColor(S.hlColor);
+
+  const L = [];
+  L.push("[Script Info]");
+  L.push("; Generated by Caption Studio");
+  L.push("ScriptType: v4.00+");
+  L.push("WrapStyle: 2");
+  L.push("ScaledBorderAndShadow: yes");
+  L.push("YCbCr Matrix: TV.709");
+  L.push("PlayResX: " + W);
+  L.push("PlayResY: " + H);
+  L.push("");
+  L.push("[V4+ Styles]");
+  L.push("Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding");
+  L.push("Style: Karaoke,Anton," + fontSize + ",&H00FFFFFF,&H000000FF,&H00000000,&H73000000,0,0,0,0,100,100,0,0,1," +
+         outline + "," + shadow + ",5,40,40,40,1");
+  L.push("");
+  L.push("[Events]");
+  L.push("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text");
+
+  S.words.forEach((w, i) => {
+    if (w.start === null || w.end === null) return;
+    const g = groupOf(i);
+    const text = g.words.map((word, k) =>
+      (g.from + k === i) ? "{\\c" + HL + "}" + word.text + "{\\c" + WHITE + "}" : word.text
+    ).join(" ");
+    L.push("Dialogue: 0," + assTime(w.start) + "," + assTime(w.end) +
+           ",Karaoke,,0,0,0,,{\\pos(" + x + "," + y + ")}" + text);
+  });
+  return L.join("\r\n") + "\r\n";
+}
+
+function buildSRT() {
+  const out = [];
+  let n = 1;
+  groups().forEach(g => {
+    const timed = g.filter(w => w.start !== null && w.end !== null);
+    if (!timed.length) return;
+    out.push(String(n++));
+    out.push(srtTime(timed[0].start) + " --> " + srtTime(timed[timed.length - 1].end));
+    out.push(g.map(w => w.text).join(" "));
+    out.push("");
+  });
+  return out.join("\r\n");
+}
+
+function buildJSON() {
+  return JSON.stringify({
+    words: S.words.map(w => ({
+      text: w.text,
+      start: +(w.start || 0).toFixed(3),
+      end: +(w.end || 0).toFixed(3)
+    }))
+  }, null, 2);
+}
+
+$("expAss").addEventListener("click", () => { download(baseName() + ".ass", buildASS()); say("Saved " + baseName() + ".ass", "ok"); });
+$("expSrt").addEventListener("click", () => { download(baseName() + ".srt", buildSRT()); say("Saved " + baseName() + ".srt", "ok"); });
+$("expJson").addEventListener("click", () => { download(baseName() + ".json", buildJSON(), "application/json"); say("Saved " + baseName() + ".json", "ok"); });
+
+function say(msg, kind) {
+  const el = $("exportStatus");
+  el.textContent = msg;
+  el.className = "status" + (kind ? " " + kind : "");
+}
+
+function refreshExports() {
+  const ok = allTimed();
+  ["expAss", "expSrt", "expJson", "expBurn"].forEach(id => $(id).disabled = !ok || S.recording);
+  if (S.recording) return;
+  if (!S.words.length) { say(""); return; }
+  if (!ok) {
+    const left = S.words.filter(w => w.start === null).length;
+    say(left ? left + " word" + (left === 1 ? "" : "s") + " still to tap." : "One more tap on Space closes the last word.");
+  } else {
+    say("All " + S.words.length + " words timed. Ready to save.", "ok");
+  }
+}
+
+/* ============================================================
+   Burn-in recorder
+   ============================================================ */
+const CAN_RECORD = !!(window.MediaRecorder && HTMLCanvasElement.prototype.captureStream);
+
+$("expBurn").addEventListener("click", burnIn);
+
+async function burnIn() {
+  if (!CAN_RECORD) {
+    say("This browser can't record video. Save the .ass file and burn it in with ffmpeg instead.", "warn");
+    return;
+  }
+  const W = video.videoWidth, H = video.videoHeight;
+  if (!W || !H) { say("Load a video first.", "warn"); return; }
+
+  const mimes = ["video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"];
+  const mime = mimes.find(m => MediaRecorder.isTypeSupported(m));
+  if (!mime) { say("This browser can't record WebM. Save the .ass file and burn it in with ffmpeg instead.", "warn"); return; }
+
+  const rc = document.createElement("canvas");
+  rc.width = W; rc.height = H;
+  const rctx = rc.getContext("2d");
+  const stream = rc.captureStream(30);
+
+  // Pull the audio off whichever element is actually making sound.
+  const src = master();
+  try {
+    const ms = src.captureStream ? src.captureStream() : (src.mozCaptureStream ? src.mozCaptureStream() : null);
+    if (ms) ms.getAudioTracks().forEach(t => stream.addTrack(t));
+  } catch (err) {
+    say("Recording without sound — the browser blocked audio capture.", "warn");
+  }
+
+  let rec;
+  try { rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 8000000 }); }
+  catch (err) { say("Recording wouldn't start. Save the .ass file and burn it in with ffmpeg instead.", "warn"); return; }
+
+  const chunks = [];
+  rec.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
+
+  const dur = totalTime();
+  S.recording = true;
+  refreshExports();
+  pauseAll();
+  seekAll(0);
+  await new Promise(r => setTimeout(r, 200));
+
+  rec.onstop = () => {
+    stream.getTracks().forEach(t => { if (t.kind === "video") t.stop(); });
+    S.recording = false;
+    pauseAll();
+    download(baseName() + "-captioned.webm", new Blob(chunks, { type: mime }));
+    say("Saved " + baseName() + "-captioned.webm", "ok");
+    refreshExports();
+  };
+
+  rec.start(250);
+  playAll();
+
+  const tick = () => {
+    rctx.drawImage(video, 0, 0, W, H);
+    const t = nowTime();
+    drawCaptions(rctx, W, H, t);
+    say("Recording… " + Math.min(100, Math.round(t / dur * 100)) + "%");
+    if (t >= dur - 0.04 || (video.ended && (!S.hasAudio || audio.ended))) { rec.stop(); return; }
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+}
+
+/* ============================================================
+   Boot
+   ============================================================ */
+if (!CAN_RECORD) {
+  $("expBurn").title = "Not supported in this browser — use the .ass export with ffmpeg.";
+}
+if (document.fonts && document.fonts.load) {
+  document.fonts.load('400 100px Anton', 'AA').catch(() => {});
+}
+parseScript();
+syncTransport();
+
+/* Exposed only so the acceptance checks can be run from the console. */
+window.__cs = { S, buildASS, buildSRT, buildJSON, markWord, undoMark, resyncFrom, clearAll,
+                activeIndexAt, drawCaptions, parseScript, cursorIndex, allTimed, assColor };
+</script>
