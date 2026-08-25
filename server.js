@@ -73,11 +73,14 @@ app.post('/api/analyze-voice', upload.single('audio'), async (req, res) => {
 
 app.post('/api/auto-sync', upload.single('audio'), async (req, res) => {
   if (!ai) return res.status(500).json({ error: "GEMINI_API_KEY not configured on server" });
-  if (!req.body.script) return res.status(400).json({ error: "No script provided" });
+  // Script is now optional for auto-transcription
 
   try {
     const b64 = req.file.buffer.toString('base64');
-    const scriptWords = JSON.parse(req.body.script);
+    let scriptWords = [];
+    if (req.body.script && req.body.script !== "[]") {
+      scriptWords = JSON.parse(req.body.script);
+    }
     
     // We expect the model to return an array of timestamps.
     const schema = {
@@ -93,8 +96,10 @@ app.post('/api/auto-sync', upload.single('audio'), async (req, res) => {
       }
     };
 
-    const prompt = `
-You are a highly precise audio alignment engine. I will provide an audio clip and the exact sequence of words spoken in the audio.
+    
+    let prompt = "";
+    if (scriptWords.length > 0) {
+      prompt = `You are a highly precise audio alignment engine. I will provide an audio clip and the exact sequence of words spoken in the audio.
 Your task is to return a JSON array containing the exact start and end timestamps (in seconds) for each word.
 
 THE EXACT WORDS (in order):
@@ -103,8 +108,17 @@ ${scriptWords.map(w => w.text).join(' ')}
 RULES:
 1. You MUST return exactly ${scriptWords.length} objects, one for each word in the sequence provided.
 2. The timestamps must be sequentially increasing.
-3. If there are gaps in the speech, the timestamps should reflect that.
-`;
+3. If there are gaps in the speech, the timestamps should reflect that.`;
+    } else {
+      prompt = `You are a highly precise audio transcription and alignment engine. Listen to the audio clip and transcribe the spoken words.
+Your task is to return a JSON array containing the exact start and end timestamps (in seconds) for each word spoken.
+
+RULES:
+1. Do not include punctuation in the 'word' field.
+2. The timestamps must be sequentially increasing.
+3. Transcribe exactly what is spoken, broken down word by word. Do not chunk words together.`;
+    }
+
 
     const response = await ai.models.generateContent({
       model: "gemini-2.5-flash",
@@ -132,6 +146,69 @@ RULES:
     res.json(JSON.parse(response.text));
   } catch (err) {
     console.error("Auto-sync error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+app.post('/api/rewrite', express.json(), async (req, res) => {
+  if (!ai) return res.status(500).json({ error: "GEMINI_API_KEY not configured on server" });
+  if (!req.body.script) return res.status(400).json({ error: "No script provided" });
+
+  try {
+    const tone = req.body.tone || "punchy";
+    const prompt = `Rewrite the following script to make it ${tone}. Keep it extremely concise and suitable for a fast-paced short-form video (TikTok/Reels). Do not use punctuation like commas or periods in the output since it will be used for captions. Return ONLY the text, no markdown.
+
+SCRIPT:
+${req.body.script}`;
+
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      config: { temperature: 0.7 }
+    });
+
+    res.json({ script: response.text.trim() });
+  } catch (err) {
+    console.error("Rewrite error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+app.post('/api/generate-script', express.json(), async (req, res) => {
+  if (!ai) return res.status(500).json({ error: "GEMINI_API_KEY not configured" });
+  try {
+    const topic = req.body.topic;
+    const prompt = `Write a highly engaging, 30-second script for a TikTok/Reels/Shorts video about: "${topic}". 
+Start with a strong viral hook. Keep sentences short and punchy. Do not include visual directions, brackets, or speaker labels. Return ONLY the spoken text.`;
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: [{ role: 'user', parts: [{ text: prompt }] }]
+    });
+    res.json({ script: response.text.trim() });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/emojify', express.json(), async (req, res) => {
+  if (!ai) return res.status(500).json({ error: "GEMINI_API_KEY not configured" });
+  try {
+    const script = req.body.script;
+    const prompt = `You are an expert short-form video editor. Take the following script and insert a few highly relevant emojis into the text to make it visually engaging. 
+RULES:
+1. Don't overdo it (max 1-2 emojis per sentence).
+2. Place the emoji immediately AFTER the relevant word.
+3. DO NOT change any of the actual words or punctuation. Just insert emojis.
+SCRIPT:
+${script}`;
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: [{ role: 'user', parts: [{ text: prompt }] }]
+    });
+    res.json({ script: response.text.trim() });
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });

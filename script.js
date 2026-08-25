@@ -4,6 +4,7 @@
    State
    ============================================================ */
 const S = {
+  animStyle: "none", hlColor: "#FACC15",
   words: [],            // {raw, text, start, end}
   wps: 3,
   sizePct: 8.5,
@@ -885,8 +886,13 @@ function buildASS() {
       if (S.emphasise && word.key) return "{\\c" + KEY + "}" + word.text + "{\\c" + WHITE + "}";
       return word.text;
     }).join(" ");
+    let fx = "";
+    if (S.animStyle === "pop") fx = "\\fscx0\\fscy0\\t(0,150,\\fscx100\\fscy100)";
+    if (S.animStyle === "bounce") fx = "\\fscx0\\fscy0\\t(0,100,\\fscx120\\fscy120)\\t(100,200,\\fscx100\\fscy100)";
+    if (S.animStyle === "fade") fx = "\\fad(200,0)";
+    
     L.push("Dialogue: 0," + assTime(w.start) + "," + assTime(w.end) +
-           ",Karaoke,,0,0,0,,{\\pos(" + x + "," + y + ")}" + text);
+           ",Karaoke,,0,0,0,,{\\pos(" + x + "," + y + ")" + fx + "}" + text);
   });
   return L.join("\r\n") + "\r\n";
 }
@@ -1091,6 +1097,10 @@ if ($("btnAiSync")) {
       return;
     }
     if (!S.words || S.words.length === 0) {
+      alert("Please paste your script first, or use Auto-Transcribe.");
+      return;
+    }
+    if (false) {
       alert("Please paste your script first.");
       return;
     }
@@ -1144,5 +1154,160 @@ if ($("btnAiSync")) {
       btn.textContent = originalText;
       btn.disabled = false;
     }
+  });
+}
+
+
+
+/* ============================================================
+   AI Script Tools (Rewrite & Transcribe)
+   ============================================================ */
+if ($("btnRewrite")) {
+  $("btnRewrite").addEventListener("click", async () => {
+    const text = scriptEl.value.trim();
+    if (!text) {
+      alert("Please paste a script first to rewrite.");
+      return;
+    }
+    
+    const btn = $("btnRewrite");
+    const originalText = btn.textContent;
+    btn.textContent = "⏳ Rewriting...";
+    btn.disabled = true;
+    
+    try {
+      const res = await fetch("/api/rewrite", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ script: text, tone: "punchy and engaging for short-form video" })
+      });
+      if (!res.ok) throw new Error((await res.json()).error);
+      const data = await res.json();
+      scriptEl.value = data.script;
+      parseScript(); // update words
+    } catch (e) {
+      console.error(e);
+      alert("Failed to rewrite: " + e.message);
+    } finally {
+      btn.textContent = originalText;
+      btn.disabled = false;
+    }
+  });
+}
+
+if ($("btnTranscribe")) {
+  $("btnTranscribe").addEventListener("click", async () => {
+    const file = $("audioFile").files[0] || $("videoFile").files[0];
+    if (!file) {
+      alert("Please load a video or audio file first in Step 1.");
+      return;
+    }
+    
+    const btn = $("btnTranscribe");
+    const originalText = btn.textContent;
+    btn.textContent = "⏳ Extracting audio...";
+    btn.disabled = true;
+    
+    try {
+      const audioBlob = await extractAudioWav(file, 300);
+      btn.textContent = "🎙️ Transcribing...";
+      
+      const formData = new FormData();
+      formData.append("audio", audioBlob);
+      // Empty script means transcribe
+      
+      const res = await fetch("/api/auto-sync", {
+        method: "POST",
+        body: formData
+      });
+      if (!res.ok) throw new Error((await res.json()).error);
+      const timings = await res.json();
+      
+      if (!Array.isArray(timings) || timings.length === 0) {
+          throw new Error("No transcription returned.");
+      }
+      
+      // We got word objects back {word, start, end}
+      S.words = timings.map(t => ({
+        text: t.word.toUpperCase(),
+        start: t.start,
+        end: t.end,
+        key: false
+      }));
+      
+      // Update text area
+      scriptEl.value = timings.map(t => t.word.toUpperCase()).join(" ");
+      
+      renderChips();
+      refreshExports();
+      
+      btn.textContent = "✅ Done!";
+      setTimeout(() => { btn.textContent = originalText; btn.disabled = false; }, 3000);
+    } catch (e) {
+      console.error(e);
+      alert("Transcription failed: " + e.message);
+      btn.textContent = originalText;
+      btn.disabled = false;
+    }
+  });
+}
+
+
+
+if ($("btnGenerate")) {
+  $("btnGenerate").addEventListener("click", async () => {
+    const topic = $("topicInput").value.trim();
+    if (!topic) return alert("Enter a topic first!");
+    const btn = $("btnGenerate");
+    const orig = btn.textContent;
+    btn.textContent = "⏳ Generating...";
+    btn.disabled = true;
+    try {
+      const res = await fetch("/api/generate-script", {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({topic})
+      });
+      const data = await res.json();
+      scriptEl.value = data.script;
+      parseScript();
+    } catch(e) { alert(e.message); }
+    btn.textContent = orig; btn.disabled = false;
+  });
+}
+
+if ($("btnEmojify")) {
+  $("btnEmojify").addEventListener("click", async () => {
+    const script = scriptEl.value.trim();
+    if (!script) return alert("Paste or generate a script first!");
+    const btn = $("btnEmojify");
+    const orig = btn.textContent;
+    btn.textContent = "⏳ Adding...";
+    btn.disabled = true;
+    try {
+      const res = await fetch("/api/emojify", {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({script})
+      });
+      const data = await res.json();
+      scriptEl.value = data.script;
+      parseScript();
+    } catch(e) { alert(e.message); }
+    btn.textContent = orig; btn.disabled = false;
+  });
+}
+
+
+
+/* ============================================================
+   Step 4 UI Events
+   ============================================================ */
+if (document.getElementById("captionAnimStyle")) {
+  document.getElementById("captionAnimStyle").addEventListener("change", e => {
+    S.animStyle = e.target.value;
+  });
+}
+if (document.getElementById("customHlColor")) {
+  document.getElementById("customHlColor").addEventListener("input", e => {
+    S.hlColor = e.target.value;
   });
 }
