@@ -205,7 +205,9 @@ function parseScript() {
   S.words = next;
   renderChips();
   const n = next.length;
-  $("wordCount").textContent = n ? (n + (n === 1 ? " word ready to sync." : " words ready to sync.")) : "No words yet.";
+  if ($("wordCount")) {
+    $("wordCount").textContent = n ? (n + (n === 1 ? " word ready to sync." : " words ready to sync.")) : "No words yet.";
+  }
 }
 
 /* cursor = first word with no start; everything before it is marked. */
@@ -653,7 +655,11 @@ function renderChips() {
     b.addEventListener("click", ev => {
       if (ev.shiftKey) {                 // overrule the automatic pick
         w.key = !w.key; w.keyManual = true;
-        if (!S.emphasise) { S.emphasise = true; $("emphasise").checked = true; $("keyRow").style.display = ""; }
+        if (!S.emphasise) {
+          S.emphasise = true;
+          if ($("emphasise")) $("emphasise").checked = true;
+          if ($("keyRow")) $("keyRow").style.display = "";
+        }
         renderChips();
         return;
       }
@@ -676,7 +682,7 @@ function renderChips() {
 
   chipsEl.replaceChildren(frag);
   const keyN = S.words.filter(w => w.key).length;
-  $("keyCount").textContent = S.emphasise ? keyN + " of " + S.words.length : "";
+  if ($("keyCount")) $("keyCount").textContent = S.emphasise ? keyN + " of " + S.words.length : "";
   const marked = S.words.filter(w => w.start !== null).length + (closed ? 1 : 0);
   $("tapProgress").style.width = Math.round(marked / (S.words.length + 1) * 100) + "%";
 
