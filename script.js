@@ -688,17 +688,25 @@ function renderChips() {
 /* ============================================================
    Style controls
    ============================================================ */
-function bindRange(id, key, fmt) {
+/* Controls are optional: the layout has moved around, and a missing one
+   must never stop the rest of this file from running. */
+function bindRange(id, key, fmt, onInput) {
   const el = $(id), out = $(id + "Val");
-  const apply = () => { S[key] = parseFloat(el.value); out.textContent = fmt(S[key]); };
-  el.addEventListener("input", apply); apply();
+  if (!el) return;
+  const apply = () => {
+    S[key] = parseFloat(el.value);
+    if (out) out.textContent = fmt(S[key]);
+  };
+  el.addEventListener("input", apply);
+  if (onInput) el.addEventListener("input", onInput);
+  apply();
 }
-bindRange("wps", "wps", v => v);
+bindRange("wps", "wps", v => v, renderChips);
 bindRange("size", "sizePct", v => String(v).replace(/\.0+$/, "") + "%");
 bindRange("pos", "posPct", v => v + "%");
-$("wps").addEventListener("input", renderChips);
 
 function buildSwatches(wrap, list, get, set) {
+  if (!wrap) return;
   list.forEach(([hex, name]) => {
     const b = document.createElement("button");
     b.type = "button"; b.className = "swatch"; b.style.background = hex;
@@ -714,11 +722,13 @@ function buildSwatches(wrap, list, get, set) {
 buildSwatches($("swatches"), COLORS, () => S.hlColor, v => S.hlColor = v);
 buildSwatches($("keySwatches"), KEY_COLORS, () => S.keyColor, v => S.keyColor = v);
 
-$("emphasise").addEventListener("change", e => {
-  S.emphasise = e.target.checked;
-  $("keyRow").style.display = S.emphasise ? "" : "none";
-  renderChips();
-});
+if ($("emphasise")) {
+  $("emphasise").addEventListener("change", e => {
+    S.emphasise = e.target.checked;
+    if ($("keyRow")) $("keyRow").style.display = S.emphasise ? "" : "none";
+    renderChips();
+  });
+}
 
 /* ============================================================
    Caption rendering
@@ -998,7 +1008,9 @@ function refreshExports() {
    ============================================================ */
 const CAN_RECORD = !!(window.MediaRecorder && HTMLCanvasElement.prototype.captureStream);
 
-$("expBurn").addEventListener("click", burnIn);
+["expBurn", "btnExportWebm"].forEach(id => {
+  if ($(id)) $(id).addEventListener("click", burnIn);
+});
 
 async function burnIn() {
   if (!CAN_RECORD) {
@@ -1097,7 +1109,9 @@ async function burnIn() {
    Boot
    ============================================================ */
 if (!CAN_RECORD) {
-  $("expBurn").title = "Not supported in this browser — use the .ass export with ffmpeg.";
+  ["expBurn", "btnExportWebm"].forEach(id => {
+    if ($(id)) $(id).title = "Not supported in this browser — use the .ass export with ffmpeg.";
+  });
 }
 if (document.fonts && document.fonts.load) {
   document.fonts.load('400 100px Anton', 'AA').catch(() => {});
