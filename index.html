@@ -9,8 +9,10 @@
 <div class="app">
 <div class="topbar">
   <h1>Caption <em>Studio</em></h1>
-  <p>Karaoke captions for vertical clips — tapped in by hand.</p>
-  <div class="privacy">Runs offline · nothing is uploaded</div>
+  <p>Karaoke captions for vertical clips — tapped in by hand or powered by AI.</p>
+  <button id="autoSaveBadge" class="api-key-btn" style="display:none;" title="Session restored from auto-save. Click to clear.">💾 Auto-Saved <span style="font-size:10px; opacity:0.8;">✕</span></button>
+  <button id="apiKeyBtn" class="api-key-btn">🔑 Gemini Key</button>
+  <div class="privacy">Runs offline · 100% Client-Side</div>
 </div>
 
 <main>
@@ -135,19 +137,28 @@
     </div>
   </div>
   
-  <div class="tapbar-styles" style="margin-top:15px; padding-top:15px; border-top:1px solid var(--vein); display:flex; gap:20px; align-items:center;">
+  <div class="tapbar-styles" style="margin:12px 18px; padding-top:12px; border-top:1px solid var(--line-soft); display:flex; gap:20px; align-items:center; flex-wrap:wrap;">
     <div style="display:flex; align-items:center; gap:8px;">
       <label style="font-size:12px; color:var(--ivory-dim);">Caption Animation:</label>
-      <select id="captionAnimStyle" style="background:var(--panel-2); color:white; border:1px solid var(--line); border-radius:4px; padding:4px; font-size:12px;">
+      <select id="captionAnimStyle" style="background:var(--panel-2); color:white; border:1px solid var(--line); border-radius:6px; padding:5px 8px; font-size:12px;">
         <option value="none">Standard</option>
         <option value="pop">Pop (Scale up)</option>
         <option value="bounce">Bounce</option>
         <option value="fade">Fade In</option>
+        <option value="glow">Neon Glow</option>
+        <option value="slide">Slide Up</option>
       </select>
     </div>
     <div style="display:flex; align-items:center; gap:8px;">
       <label style="font-size:12px; color:var(--ivory-dim);">Highlight Color:</label>
-      <input type="color" id="customHlColor" value="#FACC15" style="background:transparent; border:none; width:24px; height:24px; padding:0; cursor:pointer;">
+      <div class="color-presets" id="colorPresets">
+        <button class="color-preset-pill active" data-color="#FACC15" style="background:#FACC15;" title="TikTok Yellow"></button>
+        <button class="color-preset-pill" data-color="#06B6D4" style="background:#06B6D4;" title="Neon Cyan"></button>
+        <button class="color-preset-pill" data-color="#EC4899" style="background:#EC4899;" title="Hot Pink"></button>
+        <button class="color-preset-pill" data-color="#84CC16" style="background:#84CC16;" title="Electric Lime"></button>
+        <button class="color-preset-pill" data-color="#F97316" style="background:#F97316;" title="Flame Orange"></button>
+      </div>
+      <input type="color" id="customHlColor" value="#FACC15" style="background:transparent; border:none; width:24px; height:24px; padding:0; cursor:pointer;" title="Custom Color">
     </div>
   </div>
 
@@ -155,11 +166,51 @@
   <div class="chips empty-state" id="chips">Paste a script in step 3. Then let step 2 speak it and time it for you — or press Play and hit Space on every word you hear.</div>
 </section>
 
+<!-- ============ EXPORT SECTION ============ -->
+<section class="tapzone" style="margin-top:0;">
+  <div class="tapbar">
+    <h2><i>5</i>Save your work</h2>
+  </div>
+  <div style="padding:18px;" class="exports">
+    <button id="btnExportAss">Save .ASS captions<small>Recommended for ffmpeg burn-in with word highlights</small></button>
+    <button id="btnExportSrt">Save .SRT captions<small>Standard cue file for TikTok / YouTube Shorts</small></button>
+    <button id="btnExportJson">Save .JSON timings<small>Raw word timestamps array</small></button>
+    <button id="btnExportWebm" class="primary">Burn into .WEBM video<small>Record video with captions in browser</small></button>
+  </div>
+</section>
+
 <div class="footnote">
   <strong style="color:var(--ivory-dim)">Burning in with ffmpeg:</strong>
   <code>ffmpeg -i clip.mp4 -vf "ass=captions.ass" -c:a copy out.mp4</code> —
   the .ass file asks for the Anton font, so Anton needs to be installed on whichever machine runs ffmpeg.
 </div>
+
+<!-- ============ GEMINI API KEY MODAL ============ -->
+<div class="modal-overlay" id="apiKeyModal">
+  <div class="modal-content">
+    <div class="modal-header">
+      <h3>Gemini AI Settings</h3>
+      <button class="modal-close" id="modalCloseBtn">&times;</button>
+    </div>
+    <p class="hint" style="margin-bottom:14px;">
+      Enter your Google Gemini API Key below to unlock client-side AI Magic Script, Auto-Transcribe, Auto-Sync, Rewriting, and Emojifying.
+      Your key is stored safely in your local browser storage and never uploaded to any server.
+    </p>
+    <div class="field" style="margin-bottom:16px;">
+      <label for="apiKeyInput">Gemini API Key</label>
+      <input type="password" id="apiKeyInput" placeholder="AIzaSy..." style="background:var(--panel-2); color:white; border:1px solid var(--line); border-radius:8px; padding:10px; font-family:var(--mono); font-size:13px;">
+    </div>
+    <div style="display:flex; justify-between; align-items:center; gap:10px;">
+      <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener" style="font-size:12px; color:var(--vein);">Get a free Gemini API Key →</a>
+      <div style="display:flex; gap:8px; margin-left:auto;">
+        <button id="apiKeyClearBtn" class="ghost" style="font-size:12px;">Clear Key</button>
+        <button id="apiKeySaveBtn" class="primary" style="font-size:12px;">Save Settings</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 </div>
 
 <script src="script.js" type="module"></script>
+

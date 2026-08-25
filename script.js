@@ -767,17 +767,56 @@ function drawCaptions(ctx, W, H, t) {
   ctx.strokeStyle = "#000";
 
   words.forEach((w, k) => {
-    // the soft shadow sits under the outline only
-    ctx.shadowColor = "rgba(0,0,0,0.45)";
-    ctx.shadowBlur = fontPx * 0.14;
-    ctx.shadowOffsetY = fontPx * 0.06;
-    ctx.strokeText(w.text, x, y);
+    const isCurrent = (g.from + k === idx);
+    let wordY = y;
+    let wordScale = 1;
+    let wordAlpha = 1;
+    let shadowGlow = false;
+
+    if (isCurrent && w.start !== null && w.end !== null) {
+      const dur = Math.max(0.08, w.end - w.start);
+      const prog = Math.min(1, Math.max(0, (t - w.start) / dur));
+
+      if (S.animStyle === "pop") {
+        wordScale = 1 + 0.18 * Math.sin(prog * Math.PI);
+      } else if (S.animStyle === "bounce") {
+        wordY -= fontPx * 0.12 * Math.sin(prog * Math.PI);
+      } else if (S.animStyle === "fade") {
+        wordAlpha = Math.min(1, prog * 3);
+      } else if (S.animStyle === "glow") {
+        shadowGlow = true;
+      } else if (S.animStyle === "slide") {
+        wordY += fontPx * 0.2 * (1 - Math.min(1, prog * 2.5));
+      }
+    }
+
+    ctx.save();
+    if (wordAlpha < 1) ctx.globalAlpha = wordAlpha;
+    if (wordScale !== 1) {
+      ctx.translate(x + m.ws[k] / 2, wordY);
+      ctx.scale(wordScale, wordScale);
+      ctx.translate(-(x + m.ws[k] / 2), -wordY);
+    }
+
+    if (shadowGlow && isCurrent) {
+      ctx.shadowColor = S.hlColor;
+      ctx.shadowBlur = fontPx * 0.4;
+    } else {
+      ctx.shadowColor = "rgba(0,0,0,0.45)";
+      ctx.shadowBlur = fontPx * 0.14;
+      ctx.shadowOffsetY = fontPx * 0.06;
+    }
+
+    ctx.strokeText(w.text, x, wordY);
     ctx.shadowColor = "transparent";
     ctx.shadowBlur = 0; ctx.shadowOffsetY = 0;
-    ctx.fillStyle = (g.from + k === idx) ? S.hlColor
+
+    ctx.fillStyle = isCurrent ? S.hlColor
                   : (S.emphasise && w.key) ? S.keyColor
                   : "#FFFFFF";
-    ctx.fillText(w.text, x, y);
+    ctx.fillText(w.text, x, wordY);
+    ctx.restore();
+
     x += m.ws[k] + m.gap;
   });
   ctx.restore();
@@ -921,19 +960,28 @@ function buildJSON() {
   }, null, 2);
 }
 
-$("expAss").addEventListener("click", () => { download(baseName() + ".ass", buildASS()); say("Saved " + baseName() + ".ass", "ok"); });
-$("expSrt").addEventListener("click", () => { download(baseName() + ".srt", buildSRT()); say("Saved " + baseName() + ".srt", "ok"); });
-$("expJson").addEventListener("click", () => { download(baseName() + ".json", buildJSON(), "application/json"); say("Saved " + baseName() + ".json", "ok"); });
+const bindExportBtn = (id1, id2, fn) => {
+  const btn = $(id1) || $(id2);
+  if (btn) btn.addEventListener("click", fn);
+};
+
+bindExportBtn("expAss", "btnExportAss", () => { download(baseName() + ".ass", buildASS()); say("Saved " + baseName() + ".ass", "ok"); });
+bindExportBtn("expSrt", "btnExportSrt", () => { download(baseName() + ".srt", buildSRT()); say("Saved " + baseName() + ".srt", "ok"); });
+bindExportBtn("expJson", "btnExportJson", () => { download(baseName() + ".json", buildJSON(), "application/json"); say("Saved " + baseName() + ".json", "ok"); });
 
 function say(msg, kind) {
   const el = $("exportStatus");
-  el.textContent = msg;
-  el.className = "status" + (kind ? " " + kind : "");
+  if (el) {
+    el.textContent = msg;
+    el.className = "status" + (kind ? " " + kind : "");
+  }
 }
 
 function refreshExports() {
   const ok = allTimed();
-  ["expAss", "expSrt", "expJson", "expBurn"].forEach(id => $(id).disabled = !ok || S.recording);
+  ["expAss", "btnExportAss", "expSrt", "btnExportSrt", "expJson", "btnExportJson", "expBurn", "btnExportWebm"].forEach(id => {
+    if ($(id)) $(id).disabled = !ok || S.recording;
+  });
   if (S.recording) return;
   if (!S.words.length) { say(""); return; }
   if (!ok) {
@@ -942,6 +990,7 @@ function refreshExports() {
   } else {
     say("All " + S.words.length + " words timed. Ready to save.", "ok");
   }
+  if (typeof saveSessionState === "function") saveSessionState();
 }
 
 /* ============================================================
@@ -1065,195 +1114,146 @@ window.__cs = { S, buildASS, buildSRT, buildJSON, markWord, undoMark, resyncFrom
 
 
 /* ============================================================
-   AI Auto-Sync (Gemini)
+   Gemini API Key & Client-Side Cloud Integration
    ============================================================ */
-async function extractAudioWav(file, maxSeconds) {
+function getApiKey() {
+  return localStorage.getItem("gemini_api_key") || "";
+}
+
+function setApiKey(key) {
+  if (key) {
+    localStorage.setItem("gemini_api_key", key);
+  } else {
+    localStorage.removeItem("gemini_api_key");
+  }
+  updateApiKeyBtnState();
+}
+
+function updateApiKeyBtnState() {
+  const btn = $("apiKeyBtn");
+  if (!btn) return;
+  const key = getApiKey();
+  if (key) {
+    btn.classList.add("active");
+    btn.textContent = "🔑 Gemini Connected";
+  } else {
+    btn.classList.remove("active");
+    btn.textContent = "🔑 Gemini Key";
+  }
+}
+
+if ($("apiKeyBtn")) {
+  $("apiKeyBtn").addEventListener("click", () => {
+    $("apiKeyInput").value = getApiKey();
+    $("apiKeyModal").classList.add("open");
+  });
+}
+if ($("modalCloseBtn")) {
+  $("modalCloseBtn").addEventListener("click", () => {
+    $("apiKeyModal").classList.remove("open");
+  });
+}
+if ($("apiKeySaveBtn")) {
+  $("apiKeySaveBtn").addEventListener("click", () => {
+    const val = $("apiKeyInput").value.trim();
+    setApiKey(val);
+    $("apiKeyModal").classList.remove("open");
+  });
+}
+if ($("apiKeyClearBtn")) {
+  $("apiKeyClearBtn").addEventListener("click", () => {
+    setApiKey("");
+    $("apiKeyInput").value = "";
+    $("apiKeyModal").classList.remove("open");
+  });
+}
+updateApiKeyBtnState();
+
+async function callGeminiApi(promptText, audioBlob = null, jsonSchema = null) {
+  const apiKey = getApiKey();
+  if (!apiKey) {
+    $("apiKeyModal").classList.add("open");
+    throw new Error("Please set your Gemini API key in the settings modal first.");
+  }
+
+  const parts = [{ text: promptText }];
+
+  if (audioBlob) {
+    const arrayBuffer = await audioBlob.arrayBuffer();
+    const bytes = new Uint8Array(arrayBuffer);
+    let binary = "";
+    const len = bytes.byteLength;
+    for (let i = 0; i < len; i++) {
+      binary += String.fromCharCode(bytes[i]);
+    }
+    const base64Audio = btoa(binary);
+    parts.push({
+      inlineData: {
+        mimeType: audioBlob.type || "audio/wav",
+        data: base64Audio
+      }
+    });
+  }
+
+  const reqBody = {
+    contents: [{ role: "user", parts: parts }]
+  };
+
+  if (jsonSchema) {
+    reqBody.generationConfig = {
+      responseMimeType: "application/json",
+      responseSchema: jsonSchema,
+      temperature: 0.1
+    };
+  }
+
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+  const res = await fetch(endpoint, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(reqBody)
+  });
+
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(errData.error?.message || `Gemini API HTTP Error ${res.status}`);
+  }
+
+  const data = await res.json();
+  const resText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+  if (!resText) throw new Error("Empty response from Gemini API");
+
+  return jsonSchema ? JSON.parse(resText) : resText.trim();
+}
+
+async function extractAudioWav(file, maxSeconds = 300) {
   const AC = window.AudioContext || window.webkitAudioContext;
   const ctx = new AC();
   const decoded = await ctx.decodeAudioData(await file.arrayBuffer());
   ctx.close();
   const sr = 16000;
-  const dur = Math.min(decoded.duration, maxSeconds || 300); // Up to 5 minutes
+  const dur = Math.min(decoded.duration, maxSeconds);
   const off = new OfflineAudioContext(1, Math.ceil(dur * sr), sr);
   const src = off.createBufferSource();
   src.buffer = decoded; src.connect(off.destination); src.start(0);
   const rendered = await off.startRendering();
   const pcm = rendered.getChannelData(0), n = pcm.length;
-  const ab = new ArrayBuffer(44 + n*2), dv = new DataView(ab);
-  const w = (o,s) => { for (let i=0;i<s.length;i++) dv.setUint8(o+i, s.charCodeAt(i)); };
-  w(0,'RIFF'); dv.setUint32(4,36+n*2,true); w(8,'WAVEfmt ');
-  dv.setUint32(16,16,true); dv.setUint16(20,1,true); dv.setUint16(22,1,true);
-  dv.setUint32(24,sr,true); dv.setUint32(28,sr*2,true); dv.setUint16(32,2,true);
-  dv.setUint16(34,16,true); w(36,'data'); dv.setUint32(40,n*2,true);
-  for (let i=0;i<n;i++){ const s=Math.max(-1,Math.min(1,pcm[i])); dv.setInt16(44+i*2, s<0?s*0x8000:s*0x7FFF, true); }
-  return new Blob([ab], {type:'audio/wav'});
+  const ab = new ArrayBuffer(44 + n * 2), dv = new DataView(ab);
+  const w = (o, s) => { for (let i = 0; i < s.length; i++) dv.setUint8(o + i, s.charCodeAt(i)); };
+  w(0, 'RIFF'); dv.setUint32(4, 36 + n * 2, true); w(8, 'WAVEfmt ');
+  dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
+  dv.setUint32(24, sr, true); dv.setUint32(28, sr * 2, true); dv.setUint16(32, 2, true);
+  dv.setUint16(34, 16, true); w(36, 'data'); dv.setUint32(40, n * 2, true);
+  for (let i = 0; i < n; i++) {
+    const s = Math.max(-1, Math.min(1, pcm[i]));
+    dv.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+  }
+  return new Blob([ab], { type: 'audio/wav' });
 }
-
-if ($("btnAiSync")) {
-  $("btnAiSync").addEventListener("click", async () => {
-    const file = $("audioFile").files[0] || $("videoFile").files[0];
-    if (!file) {
-      alert("Please load a video or audio file first.");
-      return;
-    }
-    if (!S.words || S.words.length === 0) {
-      alert("Please paste your script first, or use Auto-Transcribe.");
-      return;
-    }
-    if (false) {
-      alert("Please paste your script first.");
-      return;
-    }
-    
-    const btn = $("btnAiSync");
-    const originalText = btn.textContent;
-    btn.textContent = "⏳ Extracting audio...";
-    btn.disabled = true;
-
-    try {
-      const audioBlob = await extractAudioWav(file, 300);
-      
-      btn.textContent = "🧠 Gemini is aligning...";
-      
-      const formData = new FormData();
-      formData.append("audio", audioBlob);
-      formData.append("script", JSON.stringify(S.words));
-      
-      const res = await fetch("/api/auto-sync", {
-        method: "POST",
-        body: formData
-      });
-      
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.error || "Server error");
-      }
-      
-      const timings = await res.json();
-      
-      if (!Array.isArray(timings) || timings.length === 0) {
-          throw new Error("Invalid response from Gemini.");
-      }
-      
-      // Map timings back to words
-      for (let i = 0; i < S.words.length; i++) {
-        const t = timings[i];
-        if (t) {
-            S.words[i].start = t.start;
-            S.words[i].end = t.end;
-        }
-      }
-      
-      renderChips();
-      refreshExports();
-      btn.textContent = "✅ Done!";
-      setTimeout(() => { btn.textContent = originalText; btn.disabled = false; }, 3000);
-    } catch (e) {
-      console.error(e);
-      alert("AI Sync failed: " + e.message);
-      btn.textContent = originalText;
-      btn.disabled = false;
-    }
-  });
-}
-
-
 
 /* ============================================================
-   AI Script Tools (Rewrite & Transcribe)
+   AI Feature Event Handlers
    ============================================================ */
-if ($("btnRewrite")) {
-  $("btnRewrite").addEventListener("click", async () => {
-    const text = scriptEl.value.trim();
-    if (!text) {
-      alert("Please paste a script first to rewrite.");
-      return;
-    }
-    
-    const btn = $("btnRewrite");
-    const originalText = btn.textContent;
-    btn.textContent = "⏳ Rewriting...";
-    btn.disabled = true;
-    
-    try {
-      const res = await fetch("/api/rewrite", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ script: text, tone: "punchy and engaging for short-form video" })
-      });
-      if (!res.ok) throw new Error((await res.json()).error);
-      const data = await res.json();
-      scriptEl.value = data.script;
-      parseScript(); // update words
-    } catch (e) {
-      console.error(e);
-      alert("Failed to rewrite: " + e.message);
-    } finally {
-      btn.textContent = originalText;
-      btn.disabled = false;
-    }
-  });
-}
-
-if ($("btnTranscribe")) {
-  $("btnTranscribe").addEventListener("click", async () => {
-    const file = $("audioFile").files[0] || $("videoFile").files[0];
-    if (!file) {
-      alert("Please load a video or audio file first in Step 1.");
-      return;
-    }
-    
-    const btn = $("btnTranscribe");
-    const originalText = btn.textContent;
-    btn.textContent = "⏳ Extracting audio...";
-    btn.disabled = true;
-    
-    try {
-      const audioBlob = await extractAudioWav(file, 300);
-      btn.textContent = "🎙️ Transcribing...";
-      
-      const formData = new FormData();
-      formData.append("audio", audioBlob);
-      // Empty script means transcribe
-      
-      const res = await fetch("/api/auto-sync", {
-        method: "POST",
-        body: formData
-      });
-      if (!res.ok) throw new Error((await res.json()).error);
-      const timings = await res.json();
-      
-      if (!Array.isArray(timings) || timings.length === 0) {
-          throw new Error("No transcription returned.");
-      }
-      
-      // We got word objects back {word, start, end}
-      S.words = timings.map(t => ({
-        text: t.word.toUpperCase(),
-        start: t.start,
-        end: t.end,
-        key: false
-      }));
-      
-      // Update text area
-      scriptEl.value = timings.map(t => t.word.toUpperCase()).join(" ");
-      
-      renderChips();
-      refreshExports();
-      
-      btn.textContent = "✅ Done!";
-      setTimeout(() => { btn.textContent = originalText; btn.disabled = false; }, 3000);
-    } catch (e) {
-      console.error(e);
-      alert("Transcription failed: " + e.message);
-      btn.textContent = originalText;
-      btn.disabled = false;
-    }
-  });
-}
-
-
-
 if ($("btnGenerate")) {
   $("btnGenerate").addEventListener("click", async () => {
     const topic = $("topicInput").value.trim();
@@ -1263,51 +1263,308 @@ if ($("btnGenerate")) {
     btn.textContent = "⏳ Generating...";
     btn.disabled = true;
     try {
-      const res = await fetch("/api/generate-script", {
-        method: "POST", headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({topic})
-      });
-      const data = await res.json();
-      scriptEl.value = data.script;
+      const prompt = `Write a highly engaging, 30-second script for a TikTok/Reels video about: "${topic}". Start with a strong hook. Keep sentences short and punchy. Return ONLY the spoken script text, no punctuation or markdown.`;
+      const result = await callGeminiApi(prompt);
+      scriptEl.value = result;
       parseScript();
-    } catch(e) { alert(e.message); }
-    btn.textContent = orig; btn.disabled = false;
+      btn.textContent = "✨ Done!";
+      setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 2000);
+    } catch(e) {
+      alert(e.message);
+      btn.textContent = orig; btn.disabled = false;
+    }
+  });
+}
+
+if ($("btnRewrite")) {
+  $("btnRewrite").addEventListener("click", async () => {
+    const text = scriptEl.value.trim();
+    if (!text) return alert("Please paste a script first!");
+    const btn = $("btnRewrite");
+    const orig = btn.textContent;
+    btn.textContent = "⏳ Rewriting...";
+    btn.disabled = true;
+    try {
+      const prompt = `Rewrite the following script to make it punchy, energetic, and concise for a TikTok/Shorts video caption. Return ONLY the spoken text, without punctuation.\n\nSCRIPT:\n${text}`;
+      const result = await callGeminiApi(prompt);
+      scriptEl.value = result;
+      parseScript();
+      btn.textContent = "✨ Rewritten!";
+      setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 2000);
+    } catch(e) {
+      alert(e.message);
+      btn.textContent = orig; btn.disabled = false;
+    }
   });
 }
 
 if ($("btnEmojify")) {
   $("btnEmojify").addEventListener("click", async () => {
-    const script = scriptEl.value.trim();
-    if (!script) return alert("Paste or generate a script first!");
+    const text = scriptEl.value.trim();
+    if (!text) return alert("Please paste a script first!");
     const btn = $("btnEmojify");
     const orig = btn.textContent;
-    btn.textContent = "⏳ Adding...";
+    btn.textContent = "⏳ Adding Emojis...";
     btn.disabled = true;
     try {
-      const res = await fetch("/api/emojify", {
-        method: "POST", headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({script})
-      });
-      const data = await res.json();
-      scriptEl.value = data.script;
+      const prompt = `Take the following script and insert relevant emojis into the text (max 1 emoji per sentence/phrase). Keep original words intact.\n\nSCRIPT:\n${text}`;
+      const result = await callGeminiApi(prompt);
+      scriptEl.value = result;
       parseScript();
-    } catch(e) { alert(e.message); }
-    btn.textContent = orig; btn.disabled = false;
+      btn.textContent = "😊 Emojified!";
+      setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 2000);
+    } catch(e) {
+      alert(e.message);
+      btn.textContent = orig; btn.disabled = false;
+    }
   });
 }
 
+if ($("btnTranscribe")) {
+  $("btnTranscribe").addEventListener("click", async () => {
+    const file = $("audioFile").files[0] || $("videoFile").files[0];
+    if (!file) return alert("Please load a video or audio file first.");
+    const btn = $("btnTranscribe");
+    const orig = btn.textContent;
+    btn.textContent = "⏳ Extracting audio...";
+    btn.disabled = true;
+    try {
+      const audioBlob = await extractAudioWav(file, 300);
+      btn.textContent = "🧠 Gemini transcribing...";
+      const schema = {
+        type: "ARRAY",
+        items: {
+          type: "OBJECT",
+          properties: {
+            word: { type: "STRING" },
+            start: { type: "NUMBER" },
+            end: { type: "NUMBER" }
+          },
+          required: ["word", "start", "end"]
+        }
+      };
+      const prompt = `Listen to this audio clip and transcribe the spoken words with exact start and end timestamps in seconds. Do not include punctuation in the word field.`;
+      const timings = await callGeminiApi(prompt, audioBlob, schema);
+      if (Array.isArray(timings) && timings.length > 0) {
+        S.words = timings.map(t => ({
+          text: t.word.toUpperCase(),
+          start: t.start,
+          end: t.end,
+          key: false
+        }));
+        scriptEl.value = timings.map(t => t.word.toUpperCase()).join(" ");
+        renderChips();
+        refreshExports();
+        btn.textContent = "✅ Transcribed!";
+      } else {
+        throw new Error("Invalid response from Gemini.");
+      }
+      setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 3000);
+    } catch(e) {
+      alert("Transcription failed: " + e.message);
+      btn.textContent = orig; btn.disabled = false;
+    }
+  });
+}
 
+if ($("btnAiSync")) {
+  $("btnAiSync").addEventListener("click", async () => {
+    const file = $("audioFile").files[0] || $("videoFile").files[0];
+    if (!file) return alert("Please load a video or audio file first.");
+    if (!S.words || S.words.length === 0) return alert("Please paste your script first.");
+    const btn = $("btnAiSync");
+    const orig = btn.textContent;
+    btn.textContent = "⏳ Extracting audio...";
+    btn.disabled = true;
+    try {
+      const audioBlob = await extractAudioWav(file, 300);
+      btn.textContent = "🧠 Gemini aligning...";
+      const schema = {
+        type: "ARRAY",
+        items: {
+          type: "OBJECT",
+          properties: {
+            word: { type: "STRING" },
+            start: { type: "NUMBER" },
+            end: { type: "NUMBER" }
+          },
+          required: ["word", "start", "end"]
+        }
+      };
+      const scriptWordsStr = S.words.map(w => w.text).join(" ");
+      const prompt = `Align this audio clip with the exact word sequence:\n"${scriptWordsStr}"\n\nReturn exact start and end timestamps in seconds for each word.`;
+      const timings = await callGeminiApi(prompt, audioBlob, schema);
+      if (Array.isArray(timings) && timings.length > 0) {
+        for (let i = 0; i < S.words.length; i++) {
+          const t = timings[i];
+          if (t) {
+            S.words[i].start = t.start;
+            S.words[i].end = t.end;
+          }
+        }
+        renderChips();
+        refreshExports();
+        btn.textContent = "✅ Synced!";
+      } else {
+        throw new Error("Invalid response from Gemini.");
+      }
+      setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 3000);
+    } catch(e) {
+      alert("AI Sync failed: " + e.message);
+      btn.textContent = orig; btn.disabled = false;
+    }
+  });
+}
 
 /* ============================================================
-   Step 4 UI Events
+   Step 4 UI Events & Color Swatches
    ============================================================ */
-if (document.getElementById("captionAnimStyle")) {
-  document.getElementById("captionAnimStyle").addEventListener("change", e => {
+if ($("captionAnimStyle")) {
+  $("captionAnimStyle").addEventListener("change", e => {
     S.animStyle = e.target.value;
+    saveSessionState();
   });
 }
-if (document.getElementById("customHlColor")) {
-  document.getElementById("customHlColor").addEventListener("input", e => {
+if ($("customHlColor")) {
+  $("customHlColor").addEventListener("input", e => {
     S.hlColor = e.target.value;
+    if ($("colorPresets")) {
+      const pills = $("colorPresets").querySelectorAll(".color-preset-pill");
+      pills.forEach(p => p.classList.remove("active"));
+    }
+    saveSessionState();
   });
 }
+if ($("colorPresets")) {
+  const pills = $("colorPresets").querySelectorAll(".color-preset-pill");
+  pills.forEach(pill => {
+    pill.addEventListener("click", () => {
+      pills.forEach(p => p.classList.remove("active"));
+      pill.classList.add("active");
+      const hex = pill.getAttribute("data-color");
+      S.hlColor = hex;
+      if ($("customHlColor")) $("customHlColor").value = hex;
+      saveSessionState();
+    });
+  });
+}
+
+/* ============================================================
+   Auto-Save & Session Persistence (localStorage)
+   ============================================================ */
+const AUTO_SAVE_KEY = "captionStudio_savedSession";
+
+function saveSessionState() {
+  try {
+    const data = {
+      scriptText: scriptEl ? scriptEl.value : "",
+      words: S.words,
+      animStyle: S.animStyle,
+      hlColor: S.hlColor,
+      keyColor: S.keyColor,
+      emphasise: S.emphasise,
+      wps: S.wps,
+      sizePct: S.sizePct,
+      posPct: S.posPct,
+      rate: S.rate,
+      updatedAt: Date.now()
+    };
+    localStorage.setItem(AUTO_SAVE_KEY, JSON.stringify(data));
+    showAutoSaveBadge();
+  } catch (e) {
+    console.warn("Auto-save failed:", e);
+  }
+}
+
+function loadSessionState() {
+  try {
+    const raw = localStorage.getItem(AUTO_SAVE_KEY);
+    if (!raw) return false;
+    const data = JSON.parse(raw);
+    if (!data) return false;
+
+    if (data.scriptText !== undefined && scriptEl) {
+      scriptEl.value = data.scriptText;
+    }
+    if (Array.isArray(data.words) && data.words.length > 0) {
+      S.words = data.words;
+    }
+    if (data.animStyle) {
+      S.animStyle = data.animStyle;
+      if ($("captionAnimStyle")) $("captionAnimStyle").value = data.animStyle;
+    }
+    if (data.hlColor) {
+      S.hlColor = data.hlColor;
+      if ($("customHlColor")) $("customHlColor").value = data.hlColor;
+      if ($("colorPresets")) {
+        const pills = $("colorPresets").querySelectorAll(".color-preset-pill");
+        pills.forEach(p => {
+          if (p.getAttribute("data-color") === data.hlColor) p.classList.add("active");
+          else p.classList.remove("active");
+        });
+      }
+    }
+    if (data.keyColor) S.keyColor = data.keyColor;
+    if (data.emphasise !== undefined) {
+      S.emphasise = data.emphasise;
+      if ($("emphasise")) $("emphasise").checked = data.emphasise;
+    }
+    if (data.wps !== undefined) {
+      S.wps = data.wps;
+      if ($("wps")) $("wps").value = data.wps;
+    }
+    if (data.sizePct !== undefined) {
+      S.sizePct = data.sizePct;
+      if ($("size")) $("size").value = data.sizePct;
+    }
+    if (data.posPct !== undefined) {
+      S.posPct = data.posPct;
+      if ($("pos")) $("pos").value = data.posPct;
+    }
+    if (data.rate !== undefined) {
+      S.rate = data.rate;
+      if ($("rate")) $("rate").value = data.rate;
+      if ($("rateVal")) $("rateVal").textContent = data.rate.toFixed(2) + "×";
+    }
+
+    renderChips();
+    refreshExports();
+    showAutoSaveBadge();
+    return true;
+  } catch (e) {
+    console.warn("Failed to load session:", e);
+    return false;
+  }
+}
+
+function clearSessionState() {
+  localStorage.removeItem(AUTO_SAVE_KEY);
+  S.words = [];
+  if (scriptEl) scriptEl.value = "";
+  renderChips();
+  refreshExports();
+  hideAutoSaveBadge();
+}
+
+function showAutoSaveBadge() {
+  const badge = $("autoSaveBadge");
+  if (badge) badge.style.display = "inline-flex";
+}
+
+function hideAutoSaveBadge() {
+  const badge = $("autoSaveBadge");
+  if (badge) badge.style.display = "none";
+}
+
+if ($("autoSaveBadge")) {
+  $("autoSaveBadge").addEventListener("click", () => {
+    if (confirm("Clear auto-saved script, timings, and style session?")) {
+      clearSessionState();
+    }
+  });
+}
+
+// Restore session state automatically on startup
+loadSessionState();
+
+

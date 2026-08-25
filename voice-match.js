@@ -165,35 +165,59 @@ async function analyseWithAI() {
   const candidates = voices.filter(v => v.lang.toLowerCase().startsWith("en"));
   if (!candidates.length) return st("No English voices in this browser to choose from. Open this page in Microsoft Edge.", "err");
 
+  let activeKey = localStorage.getItem("gemini_api_key") || localStorage.getItem("captionStudio.geminiKey") || "";
+  if (!activeKey) {
+    const userKey = prompt("Please enter your Gemini API key for Voice Match:");
+    if (userKey) {
+      activeKey = userKey.trim();
+      localStorage.setItem("gemini_api_key", activeKey);
+    } else {
+      return st("Gemini API key is required for voice analysis.", "err");
+    }
+  }
+
   $("analyse").disabled = true;
   $("aiOut").replaceChildren();
   try {
-    st("Sending audio to server for Gemini analysis...");
-    
-    const formData = new FormData();
-    formData.append('audio', refFile);
-    
-    const res = await fetch('/api/analyze-voice', {
-      method: 'POST',
-      body: formData
+    st("Extracting audio clip...");
+    const wav = await extractAudioWav(refFile, 60);
+    const b64 = await toBase64(wav.blob);
+    st("Asking Gemini to analyze voice characteristics...");
+
+    const model = await pickModel(activeKey);
+    const promptText = `Analyze the speaker's vocal characteristics (gender, pitch, tone, energy level) in this audio clip. Available TTS voice choices: ${candidates.map(v => v.name).join(", ")}.`;
+
+    const res = await fetch(`${API}/models/${model}:generateContent?key=${encodeURIComponent(activeKey)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{
+          role: "user",
+          parts: [
+            { text: promptText },
+            { inlineData: { mimeType: "audio/wav", data: b64 } }
+          ]
+        }],
+        generationConfig: {
+          responseMimeType: "application/json",
+          responseSchema: SCHEMA,
+          temperature: 0.2
+        }
+      })
     });
 
     if (!res.ok) {
-      const err = await res.json();
-      throw new Error(err.error || "Server error");
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error?.message || `HTTP ${res.status}`);
     }
 
-    const jsonResponse = await res.json();
-    
-    // We will adapt the schema we get back to what the UI expects
-    const adaptedResponse = {
-      voiceDescription: jsonResponse.vocalCharacteristics.join(", ") + " - " + jsonResponse.suggestedVoiceType,
-      gender: jsonResponse.detectedGender.toLowerCase(),
-      recommendations: [] // We'll let the user pick from the gender filter
-    };
-    
-    renderAI(adaptedResponse, candidates);
-    st("Analysis complete. Confidence: " + jsonResponse.confidence + "%", "ok");
+    const data = await res.json();
+    const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (!text) throw new Error("Empty response from Gemini");
+
+    const responseObj = JSON.parse(text);
+    renderAI(responseObj, candidates);
+    st("Analysis complete!", "ok");
   } catch (e) {
     st(String(e.message || e), "err");
   } finally {
