@@ -1350,24 +1350,58 @@ async function extractAudioWav(file, maxSeconds = 300) {
 /* ============================================================
    AI Feature Event Handlers
    ============================================================ */
+
+/* A button frozen on "Generating…" gives you no way to tell slow from dead,
+   so count the seconds on the button itself. */
+const aiClocks = new WeakMap();
+
+function startAiClock(btn, label) {
+  stopAiClock(btn);
+  if (!btn.dataset.origLabel) btn.dataset.origLabel = btn.textContent;
+  const state = { t0: Date.now(), label };
+  const tick = () => {
+    btn.textContent = `⏳ ${state.label} ${Math.round((Date.now() - state.t0) / 1000)}s`;
+  };
+  tick();
+  btn.disabled = true;
+  state.timer = setInterval(tick, 1000);
+  aiClocks.set(btn, state);
+}
+
+function setAiClockLabel(btn, label) {
+  const state = aiClocks.get(btn);
+  if (state) state.label = label;
+}
+
+function stopAiClock(btn, doneLabel, holdMs) {
+  const state = aiClocks.get(btn);
+  if (state) { clearInterval(state.timer); aiClocks.delete(btn); }
+  const orig = btn.dataset.origLabel || btn.textContent;
+  if (doneLabel) {
+    btn.textContent = doneLabel;
+    setTimeout(() => { stopAiClock(btn); }, holdMs || 2000);
+  } else {
+    btn.textContent = orig;
+    btn.disabled = false;
+  }
+}
 if ($("btnGenerate")) {
   $("btnGenerate").addEventListener("click", async () => {
     const topic = $("topicInput").value.trim();
     if (!topic) return alert("Enter a topic first!");
     const btn = $("btnGenerate");
     const orig = btn.textContent;
-    btn.textContent = "⏳ Generating...";
-    btn.disabled = true;
+    startAiClock(btn, "Generating");
     try {
       const prompt = `Write a highly engaging, 30-second script for a TikTok/Reels video about: "${topic}". Start with a strong hook. Keep sentences short and punchy. Return ONLY the spoken script text, no punctuation or markdown.`;
       const result = await callGeminiApi(prompt);
       scriptEl.value = result;
       parseScript();
-      btn.textContent = "✨ Done!";
-      setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 2000);
+      const doneLabel = "✨ Done!";
+      stopAiClock(btn, doneLabel, 2000);
     } catch(e) {
-      alert(e.message);
-      btn.textContent = orig; btn.disabled = false;
+      say(e.message, "warn");
+      stopAiClock(btn);
     }
   });
 }
@@ -1378,18 +1412,17 @@ if ($("btnRewrite")) {
     if (!text) return alert("Please paste a script first!");
     const btn = $("btnRewrite");
     const orig = btn.textContent;
-    btn.textContent = "⏳ Rewriting...";
-    btn.disabled = true;
+    startAiClock(btn, "Rewriting");
     try {
       const prompt = `Rewrite the following script to make it punchy, energetic, and concise for a TikTok/Shorts video caption. Return ONLY the spoken text, without punctuation.\n\nSCRIPT:\n${text}`;
       const result = await callGeminiApi(prompt);
       scriptEl.value = result;
       parseScript();
-      btn.textContent = "✨ Rewritten!";
-      setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 2000);
+      const doneLabel = "✨ Rewritten!";
+      stopAiClock(btn, doneLabel, 2000);
     } catch(e) {
-      alert(e.message);
-      btn.textContent = orig; btn.disabled = false;
+      say(e.message, "warn");
+      stopAiClock(btn);
     }
   });
 }
@@ -1400,18 +1433,17 @@ if ($("btnEmojify")) {
     if (!text) return alert("Please paste a script first!");
     const btn = $("btnEmojify");
     const orig = btn.textContent;
-    btn.textContent = "⏳ Adding Emojis...";
-    btn.disabled = true;
+    startAiClock(btn, "Adding emojis");
     try {
       const prompt = `Take the following script and insert relevant emojis into the text (max 1 emoji per sentence/phrase). Keep original words intact.\n\nSCRIPT:\n${text}`;
       const result = await callGeminiApi(prompt);
       scriptEl.value = result;
       parseScript();
-      btn.textContent = "😊 Emojified!";
-      setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 2000);
+      const doneLabel = "😊 Emojified!";
+      stopAiClock(btn, doneLabel, 2000);
     } catch(e) {
-      alert(e.message);
-      btn.textContent = orig; btn.disabled = false;
+      say(e.message, "warn");
+      stopAiClock(btn);
     }
   });
 }
@@ -1422,11 +1454,10 @@ if ($("btnTranscribe")) {
     if (!file) return alert("Please load a video or audio file first.");
     const btn = $("btnTranscribe");
     const orig = btn.textContent;
-    btn.textContent = "⏳ Extracting audio...";
-    btn.disabled = true;
+    startAiClock(btn, "Reading audio");
     try {
       const audioBlob = await extractAudioWav(file, 300);
-      btn.textContent = "🧠 Gemini transcribing...";
+      setAiClockLabel(btn, "Transcribing");
       const schema = {
         type: "ARRAY",
         items: {
@@ -1455,10 +1486,10 @@ if ($("btnTranscribe")) {
       } else {
         throw new Error("Invalid response from Gemini.");
       }
-      setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 3000);
+      stopAiClock(btn, doneLabel, 3000);
     } catch(e) {
-      alert("Transcription failed: " + e.message);
-      btn.textContent = orig; btn.disabled = false;
+      say("Transcription failed: " + e.message, "warn");
+      stopAiClock(btn);
     }
   });
 }
@@ -1470,11 +1501,10 @@ if ($("btnAiSync")) {
     if (!S.words || S.words.length === 0) return alert("Please paste your script first.");
     const btn = $("btnAiSync");
     const orig = btn.textContent;
-    btn.textContent = "⏳ Extracting audio...";
-    btn.disabled = true;
+    startAiClock(btn, "Reading audio");
     try {
       const audioBlob = await extractAudioWav(file, 300);
-      btn.textContent = "🧠 Gemini aligning...";
+      setAiClockLabel(btn, "Aligning");
       const schema = {
         type: "ARRAY",
         items: {
@@ -1504,10 +1534,10 @@ if ($("btnAiSync")) {
       } else {
         throw new Error("Invalid response from Gemini.");
       }
-      setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 3000);
+      stopAiClock(btn, doneLabel, 3000);
     } catch(e) {
-      alert("AI Sync failed: " + e.message);
-      btn.textContent = orig; btn.disabled = false;
+      say("AI Sync failed: " + e.message, "warn");
+      stopAiClock(btn);
     }
   });
 }
