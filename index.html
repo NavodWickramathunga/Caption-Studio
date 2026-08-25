@@ -127,6 +127,29 @@ button.ghost{background:transparent}
 .filename{font-family:var(--mono);font-size:11.5px;color:var(--ivory-dim);word-break:break-all;flex:1;min-width:120px}
 .filename.none{color:var(--ivory-faint)}
 
+/* ---------- voiceover ---------- */
+.seg{display:inline-flex;background:var(--panel-2);border:1px solid var(--line);border-radius:9px;padding:3px;gap:3px;margin-bottom:12px}
+.seg button{background:transparent;border:0;border-radius:6px;padding:6px 12px;font-size:12.5px;color:var(--ivory-dim)}
+.seg button[aria-selected="true"]{background:var(--vein-deep);color:#dbe9fb}
+.seg button:hover{background:#1f2d3b;border-color:transparent}
+.seg button[aria-selected="true"]:hover{background:var(--vein-deep)}
+select{
+  font:inherit;font-size:13px;width:100%;color:var(--ivory);background:var(--panel-2);
+  border:1px solid var(--line);border-radius:8px;padding:8px 10px;
+}
+.chk{display:inline-flex;align-items:center;gap:7px;font-size:12px;color:var(--ivory-dim);cursor:pointer;margin:9px 0 2px}
+.chk input{accent-color:var(--vein);width:14px;height:14px}
+.vo-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+.net-warn{
+  margin:9px 0 0;padding:8px 10px;border-radius:7px;font-size:11.5px;line-height:1.45;
+  background:rgba(221,95,119,.10);border:1px solid rgba(221,95,119,.35);color:#f0b6c1;
+}
+.speaking{display:inline-flex;align-items:center;gap:7px}
+.speaking::before{
+  content:"";width:7px;height:7px;border-radius:50%;background:var(--rose);
+  animation:pulse 1s ease-in-out infinite;
+}
+
 textarea{
   width:100%;min-height:96px;resize:vertical;font:inherit;font-size:13px;line-height:1.6;
   background:var(--panel-2);color:var(--ivory);border:1px solid var(--line);
@@ -271,12 +294,48 @@ kbd{
     </section>
 
     <section class="step">
-      <h2><i>2</i>Add your voiceover <span class="optional">— optional</span></h2>
-      <p class="hint">If your narration is a separate file, load it here. The video's own sound is muted and the two play as one.</p>
-      <div class="filerow">
-        <label class="filebtn">Choose audio…<input type="file" id="audioFile" accept="audio/*"></label>
-        <span class="filename none" id="audioName">using the video's own audio</span>
-        <button id="clearAudio" class="ghost" style="display:none">Remove</button>
+      <h2><i>2</i>Your voiceover</h2>
+
+      <div class="seg" role="tablist" aria-label="Where the voiceover comes from">
+        <button role="tab" id="modeGen" aria-selected="true">Make one here</button>
+        <button role="tab" id="modeFile" aria-selected="false">Load a file</button>
+      </div>
+
+      <!-- generate -->
+      <div id="genPanel">
+        <p class="hint">Reads your script aloud using a voice built into Windows, and writes down when each
+          word lands — so step 4 fills itself in and you don't have to tap.</p>
+        <div class="field">
+          <label for="voice">Voice</label>
+          <select id="voice"><option>Loading voices…</option></select>
+        </div>
+        <label class="chk"><input type="checkbox" id="localOnly" checked> Offline voices only</label>
+        <div id="netWarn" class="net-warn" style="display:none">
+          Voices marked <b>online</b> are not on your machine — your script gets sent to the voice provider to
+          be spoken. Untick this only if you're fine with that.
+        </div>
+        <div class="field" style="margin-top:11px">
+          <label for="rate">Speed <b id="rateVal">1.00×</b></label>
+          <input type="range" id="rate" min="0.5" max="2" step="0.05" value="1">
+        </div>
+        <div class="vo-actions">
+          <button id="speakTime" class="primary">Speak it and time the words</button>
+          <button id="speakPlay">Play it back</button>
+          <button id="speakStop" class="ghost" disabled>Stop</button>
+        </div>
+        <div class="status" id="voStatus" role="status" aria-live="polite"></div>
+        <button id="fitVideo" style="display:none;margin-top:2px">Slow it down to fit the video</button>
+      </div>
+
+      <!-- load a file -->
+      <div id="filePanel" style="display:none">
+        <p class="hint">If your narration is already a file, load it here. The video's own sound is muted and
+          the two play as one.</p>
+        <div class="filerow">
+          <label class="filebtn">Choose audio…<input type="file" id="audioFile" accept="audio/*"></label>
+          <span class="filename none" id="audioName">using the video's own audio</span>
+          <button id="clearAudio" class="ghost" style="display:none">Remove</button>
+        </div>
       </div>
     </section>
 
@@ -327,7 +386,7 @@ kbd{
 <!-- ============ TAP STRIP ============ -->
 <section class="tapzone">
   <div class="tapbar">
-    <h2><i>4</i>Tap the words in</h2>
+    <h2><i>4</i>Check the timings</h2>
     <div class="keys">
       <span><kbd>Space</kbd> mark this word</span>
       <span><kbd>Backspace</kbd> undo one</span>
@@ -336,7 +395,7 @@ kbd{
     </div>
   </div>
   <div class="progress-line"><b id="tapProgress"></b></div>
-  <div class="chips empty-state" id="chips">Paste a script in step 3, press Play, then hit Space on every word you hear.</div>
+  <div class="chips empty-state" id="chips">Paste a script in step 3. Then let step 2 speak it and time it for you — or press Play and hit Space on every word you hear.</div>
 </section>
 
 <div class="footnote">
@@ -358,7 +417,10 @@ const S = {
   sizePct: 8.5,
   posPct: 72,
   hlColor: "#FFD400",
-  hasAudio: false,
+  hasAudio: false,          // a voiceover FILE is loaded
+  voMode: "generated",      // "generated" (spoken here) or "file"
+  rate: 1,                  // speaking speed
+  spokenDur: 0,             // how long the last spoken run actually took
   videoName: "",
   recording: false
 };
@@ -476,11 +538,15 @@ scriptEl.addEventListener("input", () => {
 });
 
 function parseScript() {
-  const tokens = scriptEl.value.trim() ? scriptEl.value.trim().split(/\s+/) : [];
+  const raw = scriptEl.value;
   const next = [];
-  for (const tok of tokens) {
-    const text = tok.replace(/[^\p{L}\p{N}'’\-]/gu, "").toUpperCase();
-    if (text) next.push({ raw: tok, text, start: null, end: null });
+  const re = /\S+/g;
+  let m;
+  while ((m = re.exec(raw)) !== null) {
+    const text = m[0].replace(/[^\p{L}\p{N}'’\-]/gu, "").toUpperCase();
+    // pos = where this word starts in the raw script, so speech boundary
+    // events (which report a character index) can be mapped back to it.
+    if (text) next.push({ raw: m[0], text, pos: m.index, start: null, end: null });
   }
   // Keep timings for the unchanged leading run, so light edits don't wipe your work.
   const old = S.words;
@@ -580,6 +646,251 @@ function closeFinalWord() {
 }
 
 /* ============================================================
+   Voiceover — spoken here, timed automatically
+
+   The speech engine fires a "boundary" event as it reaches each word.
+   We stamp the video's clock at that moment, which is exactly what a
+   spacebar tap does — so the same timing logic serves both.
+   ============================================================ */
+const TTS = window.speechSynthesis;
+const CAN_SPEAK = !!(TTS && window.SpeechSynthesisUtterance);
+let voices = [], utter = null, speakRun = null;
+
+function loadVoices() {
+  if (!CAN_SPEAK) return;
+  voices = TTS.getVoices() || [];
+  const sel = $("voice"), localOnly = $("localOnly").checked;
+  const list = voices
+    .map((v, i) => ({ v, i }))
+    .filter(o => !localOnly || o.v.localService)
+    .sort((a, b) => (b.v.lang.startsWith("en") - a.v.lang.startsWith("en")) ||
+                     a.v.name.localeCompare(b.v.name));
+
+  if (!list.length) {
+    sel.innerHTML = "<option value=''>" +
+      (voices.length ? "No offline voices installed" : "No voices available") + "</option>";
+    setVoStatus(voices.length
+      ? "No offline voices found. Untick the box above, or load an audio file instead."
+      : "This browser has no speech voices. Use the “Load a file” tab instead.", "warn");
+    return;
+  }
+  const keep = sel.value;
+  sel.innerHTML = "";
+  list.forEach(o => {
+    const opt = document.createElement("option");
+    opt.value = String(o.i);
+    opt.textContent = o.v.name + " · " + o.v.lang + (o.v.localService ? "" : " · online");
+    sel.appendChild(opt);
+  });
+  if (keep && sel.querySelector('option[value="' + keep + '"]')) sel.value = keep;
+  setVoStatus("");
+}
+if (CAN_SPEAK) {
+  loadVoices();
+  TTS.addEventListener("voiceschanged", loadVoices);
+}
+$("localOnly").addEventListener("change", e => {
+  $("netWarn").style.display = e.target.checked ? "none" : "";
+  loadVoices();
+});
+
+function setVoStatus(msg, kind) {
+  const el = $("voStatus");
+  el.className = "status" + (kind ? " " + kind : "");
+  el.textContent = msg;
+}
+
+/* --- mode switching --- */
+function setMode(mode) {
+  S.voMode = mode;
+  const gen = mode === "generated";
+  $("modeGen").setAttribute("aria-selected", gen ? "true" : "false");
+  $("modeFile").setAttribute("aria-selected", gen ? "false" : "true");
+  $("genPanel").style.display = gen ? "" : "none";
+  $("filePanel").style.display = gen ? "none" : "";
+  if (gen) stopSpeaking();
+  video.muted = (!gen && S.hasAudio);
+  syncTransport();
+}
+$("modeGen").addEventListener("click", () => setMode("generated"));
+$("modeFile").addEventListener("click", () => setMode("file"));
+
+bindRange("rate", "rate", v => v.toFixed(2) + "×");
+
+/* --- map a character index in the script back to a word --- */
+function wordIndexAtChar(charIndex) {
+  let found = -1;
+  for (let i = 0; i < S.words.length; i++) {
+    if (S.words[i].pos <= charIndex) found = i; else break;
+  }
+  return found;
+}
+
+/* --- set one word's start without disturbing the rest --- */
+function setStartAt(i, t) {
+  const w = S.words[i];
+  if (!w || w.start !== null) return;
+  w.start = t;
+  const p = S.words[i - 1];
+  if (p && p.start !== null && p.end === null) p.end = Math.max(t, p.start + 0.02);
+}
+
+/* --- after a run, interpolate anything the engine skipped and chain the ends --- */
+function normalizeTimings(finalEnd) {
+  const n = S.words.length;
+  if (!n) return 0;
+  if (S.words[0].start === null) S.words[0].start = 0;
+  let filled = 0;
+  let i = 1;
+  while (i < n) {
+    if (S.words[i].start !== null) { i++; continue; }
+    let j = i;
+    while (j < n && S.words[j].start === null) j++;
+    const a = S.words[i - 1].start;
+    const b = (j < n) ? S.words[j].start : Math.max(finalEnd, a + 0.2 * (j - i + 1));
+    const steps = j - i + 1;
+    for (let k = i; k < j; k++) { S.words[k].start = a + (b - a) * ((k - i + 1) / steps); filled++; }
+    i = j;
+  }
+  for (let k = 0; k < n - 1; k++) S.words[k].end = S.words[k + 1].start;
+  const last = S.words[n - 1];
+  last.end = Math.max(finalEnd, last.start + 0.15);
+  return filled;
+}
+
+/* --- speak; optionally record the timings as it goes --- */
+function speakScript(recordTimings) {
+  if (!CAN_SPEAK) { setVoStatus("This browser can't speak. Use the “Load a file” tab.", "warn"); return; }
+  const text = scriptEl.value.trim();
+  if (!text) { setVoStatus("Paste your script in step 3 first.", "warn"); return; }
+  if (!video.src) { setVoStatus("Load a video in step 1 first — the timings are measured against it.", "warn"); return; }
+  const vi = $("voice").value;
+  if (vi === "") { setVoStatus("Pick a voice first.", "warn"); return; }
+
+  stopSpeaking();
+  if (recordTimings) clearAll();
+
+  const u = new SpeechSynthesisUtterance(text);
+  u.voice = voices[+vi];
+  u.rate = S.rate;
+  u.pitch = 1;
+  utter = u;
+  speakRun = { boundaries: 0, recording: !!recordTimings, lastIdx: -1 };
+
+  pauseAll();
+  seekAll(0);
+  video.muted = true;
+
+  // The video starts when the voice does, so the clock and the speech
+  // share an origin on every run — timing and playback stay consistent.
+  u.onstart = () => {
+    video.play().catch(() => {});
+    setVoStatus(recordTimings ? "Listening and timing the words…" : "Playing…");
+    $("voStatus").classList.add("speaking");
+  };
+
+  u.onboundary = e => {
+    if (e.name && e.name !== "word") return;
+    speakRun.boundaries++;
+    if (!speakRun.recording) return;
+    const i = wordIndexAtChar(e.charIndex);
+    if (i < 0 || i <= speakRun.lastIdx) return;
+    speakRun.lastIdx = i;
+    setStartAt(i, video.currentTime);
+    renderChips();
+  };
+
+  u.onend = () => {
+    const spoken = video.currentTime;
+    video.pause();
+    video.muted = false;
+    $("voStatus").classList.remove("speaking");
+    $("speakStop").disabled = true;
+    utter = null;
+
+    if (speakRun && speakRun.recording) {
+      if (!speakRun.boundaries) {
+        setVoStatus("This voice doesn't report word boundaries, so it can't self-time. " +
+                    "Try a “Microsoft …” voice, or tap the words in yourself in step 4.", "warn");
+        renderChips();
+        return;
+      }
+      const filled = normalizeTimings(spoken);
+      S.spokenDur = spoken;
+      renderChips();
+      let msg = "Timed " + S.words.length + " words from the voiceover";
+      if (filled) msg += " (" + filled + " estimated between boundaries)";
+      msg += ". Voiceover " + spoken.toFixed(1) + "s · video " + totalTime().toFixed(1) + "s.";
+      setVoStatus(msg, "ok");
+      offerFit(spoken);
+    } else {
+      setVoStatus("");
+    }
+    speakRun = null;
+    syncTransport();
+  };
+
+  u.onerror = ev => {
+    $("voStatus").classList.remove("speaking");
+    $("speakStop").disabled = true;
+    video.muted = false;
+    utter = null; speakRun = null;
+    if (ev.error !== "interrupted" && ev.error !== "canceled") {
+      setVoStatus("The voice stopped: " + ev.error + ". Try another voice.", "warn");
+    }
+    syncTransport();
+  };
+
+  $("speakStop").disabled = false;
+  setVoStatus("Warming up the voice…");
+  TTS.speak(u);
+}
+
+function stopSpeaking() {
+  if (!CAN_SPEAK) return;
+  if (TTS.speaking || TTS.pending) TTS.cancel();
+  utter = null; speakRun = null;
+  video.pause();
+  video.muted = (S.voMode === "file" && S.hasAudio);
+  $("speakStop").disabled = true;
+  $("voStatus").classList.remove("speaking");
+}
+
+/* --- when the voiceover overruns the clip, offer to slow it to fit --- */
+function offerFit(spoken) {
+  const vid = isFinite(video.duration) ? video.duration : 0;
+  const btn = $("fitVideo");
+  if (!vid || !spoken || Math.abs(spoken - vid) < 0.35) { btn.style.display = "none"; return; }
+  // rate is a speed multiplier, so duration goes as 1/rate:
+  // to stretch a `spoken`-second read into `vid` seconds, scale the rate by spoken/vid.
+  const ideal = S.rate * (spoken / vid);
+  const target = Math.min(2, Math.max(0.5, ideal));
+  btn.textContent = (spoken > vid ? "Speed it up" : "Slow it down") +
+                    " to fit the video (" + target.toFixed(2) + "×)";
+  btn.title = Math.abs(ideal - target) > 0.01
+    ? "Clamped to " + target.toFixed(2) + "× — a natural-sounding voice only stretches so far, so this gets closer without fitting exactly."
+    : "";
+  btn.style.display = "";
+  btn.onclick = () => {
+    $("rate").value = target;
+    $("rate").dispatchEvent(new Event("input"));
+    btn.style.display = "none";
+    speakScript(true);
+  };
+}
+
+$("speakTime").addEventListener("click", () => speakScript(true));
+$("speakPlay").addEventListener("click", () => speakScript(false));
+$("speakStop").addEventListener("click", () => { stopSpeaking(); setVoStatus(""); });
+window.addEventListener("beforeunload", () => { if (CAN_SPEAK) TTS.cancel(); });
+
+if (!CAN_SPEAK) {
+  $("speakTime").disabled = true;
+  $("speakPlay").disabled = true;
+  setVoStatus("This browser has no speech engine. Use the “Load a file” tab instead.", "warn");
+}
+
+/* ============================================================
    Chip strip
    ============================================================ */
 const chipsEl = $("chips");
@@ -587,7 +898,7 @@ const chipsEl = $("chips");
 function renderChips() {
   if (!S.words.length) {
     chipsEl.className = "chips empty-state";
-    chipsEl.textContent = "Paste a script in step 3, press Play, then hit Space on every word you hear.";
+    chipsEl.textContent = "Paste a script in step 3. Then let step 2 speak it and time it for you — or press Play and hit Space on every word you hear.";
     $("tapProgress").style.width = "0%";
     refreshExports();
     return;
@@ -896,13 +1207,35 @@ async function burnIn() {
   const rctx = rc.getContext("2d");
   const stream = rc.captureStream(30);
 
-  // Pull the audio off whichever element is actually making sound.
-  const src = master();
-  try {
-    const ms = src.captureStream ? src.captureStream() : (src.mozCaptureStream ? src.mozCaptureStream() : null);
-    if (ms) ms.getAudioTracks().forEach(t => stream.addTrack(t));
-  } catch (err) {
-    say("Recording without sound — the browser blocked audio capture.", "warn");
+  // Getting the sound in depends on where the voiceover comes from.
+  const speaking = S.voMode === "generated" && CAN_SPEAK && $("voice").value !== "";
+  let tabStream = null;
+
+  if (speaking) {
+    // A spoken voice has no media element behind it, so there is nothing to
+    // captureStream() from. The only way to record it is to capture this tab's
+    // own audio — which Chrome will ask you to allow.
+    try {
+      tabStream = await navigator.mediaDevices.getDisplayMedia({
+        video: true, audio: true, preferCurrentTab: true
+      });
+      const at = tabStream.getAudioTracks();
+      tabStream.getVideoTracks().forEach(t => t.stop());   // we draw our own frames
+      if (at.length) stream.addTrack(at[0]);
+      else say("No tab audio was shared, so the voice won't be recorded. Re-run and tick “Also share tab audio”.", "warn");
+    } catch (err) {
+      say("Sharing was cancelled — recording the video without the voiceover.", "warn");
+      tabStream = null;
+    }
+  } else {
+    // Pull the audio off whichever element is actually making sound.
+    const src = master();
+    try {
+      const ms = src.captureStream ? src.captureStream() : (src.mozCaptureStream ? src.mozCaptureStream() : null);
+      if (ms) ms.getAudioTracks().forEach(t => stream.addTrack(t));
+    } catch (err) {
+      say("Recording without sound — the browser blocked audio capture.", "warn");
+    }
   }
 
   let rec;
@@ -921,22 +1254,30 @@ async function burnIn() {
 
   rec.onstop = () => {
     stream.getTracks().forEach(t => { if (t.kind === "video") t.stop(); });
+    if (tabStream) tabStream.getTracks().forEach(t => t.stop());
+    if (speaking) stopSpeaking();
     S.recording = false;
     pauseAll();
+    video.muted = (S.voMode === "file" && S.hasAudio);
     download(baseName() + "-captioned.webm", new Blob(chunks, { type: mime }));
     say("Saved " + baseName() + "-captioned.webm", "ok");
     refreshExports();
   };
 
   rec.start(250);
-  playAll();
+  if (speaking) speakScript(false);   // starts the video itself, in step with the voice
+  else playAll();
 
+  const wallStart = performance.now();
   const tick = () => {
     rctx.drawImage(video, 0, 0, W, H);
     const t = nowTime();
     drawCaptions(rctx, W, H, t);
     say("Recording… " + Math.min(100, Math.round(t / dur * 100)) + "%");
-    if (t >= dur - 0.04 || (video.ended && (!S.hasAudio || audio.ended))) { rec.stop(); return; }
+    const finished = t >= dur - 0.04 || (video.ended && (!S.hasAudio || audio.ended));
+    // backstop: never spin forever if the voice fails to start at all
+    const stalled = performance.now() - wallStart > (dur + 20) * 1000;
+    if (finished || stalled) { rec.stop(); return; }
     requestAnimationFrame(tick);
   };
   requestAnimationFrame(tick);
@@ -952,9 +1293,12 @@ if (document.fonts && document.fonts.load) {
   document.fonts.load('400 100px Anton', 'AA').catch(() => {});
 }
 parseScript();
+setMode("generated");
 syncTransport();
 
 /* Exposed only so the acceptance checks can be run from the console. */
 window.__cs = { S, buildASS, buildSRT, buildJSON, markWord, undoMark, resyncFrom, clearAll,
-                activeIndexAt, drawCaptions, parseScript, cursorIndex, allTimed, assColor };
+                activeIndexAt, drawCaptions, parseScript, cursorIndex, allTimed, assColor,
+                wordIndexAtChar, setStartAt, normalizeTimings, speakScript, stopSpeaking,
+                setMode, loadVoices, CAN_SPEAK, get voices() { return voices; } };
 </script>
