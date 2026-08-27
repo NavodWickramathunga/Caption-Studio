@@ -677,17 +677,26 @@ function setVoStatus(msg, kind) {
 }
 
 /* --- mode switching --- */
+/* Three places a voice can come from:
+     "own"       - already inside the clips (Veo and anything filmed with sound)
+     "generated" - spoken here by the browser
+     "file"      - a separate audio file you load                            */
 function setMode(mode) {
   S.voMode = mode;
-  const gen = mode === "generated";
-  $("modeGen").setAttribute("aria-selected", gen ? "true" : "false");
-  $("modeFile").setAttribute("aria-selected", gen ? "false" : "true");
-  $("genPanel").style.display = gen ? "" : "none";
-  $("filePanel").style.display = gen ? "none" : "";
-  if (gen) stopSpeaking();
-  video.muted = (!gen && S.hasAudio);
+  const panels = { own: "ownPanel", generated: "genPanel", file: "filePanel" };
+  const tabs   = { own: "modeOwn",  generated: "modeGen",  file: "modeFile"  };
+  Object.keys(panels).forEach(k => {
+    const p = $(panels[k]), t = $(tabs[k]);
+    if (p) p.style.display = (k === mode) ? "" : "none";
+    if (t) t.setAttribute("aria-selected", k === mode ? "true" : "false");
+  });
+  if (mode !== "generated") stopSpeaking();
+  // Only mute the clip when something else is providing the voice.
+  video.muted = (mode === "file" && S.hasAudio);
+  S.clips.forEach(c => { c.el.muted = video.muted; });
   syncTransport();
 }
+if ($("modeOwn"))  $("modeOwn").addEventListener("click",  () => setMode("own"));
 $("modeGen").addEventListener("click", () => setMode("generated"));
 $("modeFile").addEventListener("click", () => setMode("file"));
 
@@ -1452,6 +1461,9 @@ async function burnIn() {
   const stream = rc.captureStream(30);
 
   // Getting the sound in depends on where the voiceover comes from.
+  // Only a voice spoken by the browser needs screen capture. A clip that
+  // already carries its own sound, or a loaded voiceover file, is taken
+  // straight off the media element.
   const speaking = S.voMode === "generated" && CAN_SPEAK && $("voice").value !== "";
   let tabStream = null;
   let levelMeter = null;
@@ -1494,13 +1506,15 @@ async function burnIn() {
       tabStream = null;
     }
   } else {
-    // Pull the audio off whichever element is actually making sound.
-    const src = master();
+    // Take the sound straight off the element that is playing it. Routed
+    // through Web Audio rather than captureStream, because the visible
+    // element swaps source as clips change and the graph must outlive that.
     try {
-      const ms = src.captureStream ? src.captureStream() : (src.mozCaptureStream ? src.mozCaptureStream() : null);
-      if (ms) ms.getAudioTracks().forEach(t => stream.addTrack(t));
+      const track = stableAudioTrack(master());
+      if (track) stream.addTrack(track);
+      else say("Recording without sound — the browser wouldn't give up the audio.", "warn");
     } catch (err) {
-      say("Recording without sound — the browser blocked audio capture.", "warn");
+      say("Recording without sound — " + (err.message || err), "warn");
     }
   }
 
@@ -1600,7 +1614,7 @@ if (document.fonts && document.fonts.load) {
   document.fonts.load('400 100px Anton', 'AA').catch(() => {});
 }
 parseScript();
-setMode("generated");
+setMode("own");   // most clips arrive with their voice already in them
 syncTransport();
 
 /* Exposed only so the acceptance checks can be run from the console. */
@@ -1990,39 +2004,78 @@ function pacingReport() {
   return `Pace is ${wps.toFixed(1)} words/sec — good for short-form.`;
 }
 
-async function autoTimeFromAudio(file) {
+/* Pull the sound out of one file as mono at a known rate. */
+async function decodeMono(file, sr) {
   const AC = window.AudioContext || window.webkitAudioContext;
   const ctx = new AC();
   let decoded;
-  try {
-    decoded = await ctx.decodeAudioData(await file.arrayBuffer());
-  } finally {
-    try { ctx.close(); } catch (e) {}
+  try { decoded = await ctx.decodeAudioData(await file.arrayBuffer()); }
+  finally { try { ctx.close(); } catch (e) {} }
+  const off = new OfflineAudioContext(1, Math.max(1, Math.ceil(decoded.duration * sr)), sr);
+  const src = off.createBufferSource();
+  src.buffer = decoded; src.connect(off.destination); src.start(0);
+  const out = await off.startRendering();
+  return out.getChannelData(0);
+}
+
+/* The sound the captions should follow, laid end to end across every clip
+   so a joined timeline is timed as one piece. */
+async function gatherTimingAudio() {
+  const SR = 16000;
+  const voiceover = $("audioFile").files && $("audioFile").files[0];
+  if (S.hasAudio && voiceover) {
+    return { pcm: await decodeMono(voiceover, SR), sr: SR, from: "your voiceover file" };
   }
-  const segs = detectSpeechSegments(decoded.getChannelData(0), decoded.sampleRate);
-  const report = timeWordsFromSegments(segs, decoded.duration);
-  report.deadAir = findDeadAir(segs, decoded.duration);
+  if (S.clips.length) {
+    const parts = [];
+    for (const c of S.clips) {
+      try { parts.push(await decodeMono(c.file, SR)); }
+      catch (e) { parts.push(new Float32Array(Math.ceil((c.duration || 0) * SR))); }
+    }
+    const total = parts.reduce((a, p) => a + p.length, 0);
+    const pcm = new Float32Array(total);
+    let at = 0;
+    parts.forEach(p => { pcm.set(p, at); at += p.length; });
+    return { pcm, sr: SR,
+             from: S.clips.length === 1 ? "your clip's own sound"
+                                        : "the sound across all " + S.clips.length + " clips" };
+  }
+  throw new Error("Add your clips in step 1 first.");
+}
+
+async function autoTimeFromAudio() {
+  const { pcm, sr, from } = await gatherTimingAudio();
+  const duration = pcm.length / sr;
+  let peak = 0;
+  for (let i = 0; i < pcm.length; i += 7) { const v = Math.abs(pcm[i]); if (v > peak) peak = v; }
+  if (peak < 0.005) {
+    throw new Error("There's no sound in that to listen to. If your clips are silent, " +
+                    "load a voiceover under “Load a file”, or use “Make one here”.");
+  }
+  const segs = detectSpeechSegments(pcm, sr);
+  const report = timeWordsFromSegments(segs, duration);
+  report.deadAir = findDeadAir(segs, duration);
+  report.from = from;
   return report;
 }
 
 if ($("btnAutoTime")) {
   $("btnAutoTime").addEventListener("click", async () => {
     const btn = $("btnAutoTime");
-    // Prefer the separate voiceover if there is one, else the video's own sound.
-    const file = ($("audioFile").files && $("audioFile").files[0]) ||
-                 ($("videoFile").files && $("videoFile").files[0]);
-    if (!file) { say("Load your video in step 1 first.", "warn"); return; }
+    if (!S.clips.length && !(S.hasAudio && $("audioFile").files[0])) {
+      say("Add your clips in step 1 first.", "warn"); return;
+    }
     if (!S.words.length) { say("Paste your script in step 3 first.", "warn"); return; }
 
     startAiClock(btn, "Listening");
     try {
-      const report = await autoTimeFromAudio(file);
+      const report = await autoTimeFromAudio();
       renderChips();
       refreshExports();
       const heard = report.segments === 1 ? "1 stretch of speech" : report.segments + " stretches of speech";
       const notes = [describeDeadAir(report.deadAir || []), pacingReport()].filter(Boolean);
-      say(`Timed ${S.words.length} words from ${heard} (${report.speechSeconds}s of talking). ` +
-          `Click any word that looks off.`, "ok");
+      say(`Timed ${S.words.length} words from ${report.from} — ${heard}, ` +
+          `${report.speechSeconds}s of talking. Click any word that looks off.`, "ok");
       showCoachNotes(notes, (report.deadAir || []).length > 0);
       stopAiClock(btn, "✅ Timed!", 2200);
     } catch (e) {
@@ -2080,6 +2133,32 @@ function showCoachNotes(notes, isWarning) {
    how a render comes back mute despite everything "working". So measure
    the real level rather than trusting the track's presence.
    ============================================================ */
+/* A recordable audio track for a media element.
+
+   createMediaElementSource can only be called once per element, and the
+   visible <video> changes source every time a clip ends - so build the
+   graph once and keep it. The element is also reconnected to the speakers,
+   because routing it through Web Audio otherwise silences playback. */
+const audioGraphs = new WeakMap();
+
+function stableAudioTrack(el) {
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC || !el) return null;
+  let g = audioGraphs.get(el);
+  if (!g) {
+    const ac = new AC();
+    const src = ac.createMediaElementSource(el);
+    const dest = ac.createMediaStreamDestination();
+    src.connect(dest);
+    src.connect(ac.destination);          // keep it audible while recording
+    g = { ac, dest };
+    audioGraphs.set(el, g);
+  }
+  if (g.ac.state === "suspended") g.ac.resume().catch(() => {});
+  const tracks = g.dest.stream.getAudioTracks();
+  return tracks.length ? tracks[0] : null;
+}
+
 function makeLevelMeter(stream) {
   const AC = window.AudioContext || window.webkitAudioContext;
   const tracks = stream.getAudioTracks();

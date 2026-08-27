@@ -53,13 +53,26 @@
       <h2><i>2</i>Your voiceover</h2>
 
       <div class="seg" role="tablist" aria-label="Where the voiceover comes from">
-        <button role="tab" id="modeGen" aria-selected="true">Make one here</button>
+        <button role="tab" id="modeOwn" aria-selected="true">Already in the video</button>
+        <button role="tab" id="modeGen" aria-selected="false">Make one here</button>
         <button role="tab" id="modeFile" aria-selected="false">Load a file</button>
         <button role="tab" id="modePremium" aria-selected="false">Premium AI (ElevenLabs)</button>
       </div>
 
       <!-- generate -->
-      <div id="genPanel">
+      <!-- the clip already has its own narration (Veo, or anything recorded with sound) -->
+      <div id="ownPanel">
+        <p class="hint">Your clips already have the voice in them — nothing to add. The tool listens to
+          that sound and times the captions to it, and the voice comes through into the finished
+          video on its own.</p>
+        <div style="padding:11px 13px;border-radius:8px;background:var(--panel-2);border:1px solid var(--line);font-size:12.5px;line-height:1.6;color:var(--ivory-dim)">
+          <b style="color:var(--ivory)">What to do:</b>
+          paste your script in step 3, then press <b>⏱ Time it for me</b> in step 4.
+          <br>No key, no internet, no screen sharing.
+        </div>
+      </div>
+
+      <div id="genPanel" style="display:none">
         <p class="hint">Reads your script aloud using a voice built into Windows, and writes down when each
           word lands — so step 4 fills itself in and you don't have to tap.</p>
         <div class="field">
