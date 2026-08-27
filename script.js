@@ -2043,6 +2043,30 @@ async function gatherTimingAudio() {
   throw new Error("Add your clips in step 1 first.");
 }
 
+/* The same joined audio, packaged as a WAV so it can be sent somewhere.
+   Uses every clip, not just the first - a file input can no longer be the
+   source because the clip list clears it after loading. */
+async function gatherTimingWav(maxSeconds) {
+  const { pcm, sr, from } = await gatherTimingAudio();
+  const n = Math.min(pcm.length, Math.floor((maxSeconds || 300) * sr));
+  const ab = new ArrayBuffer(44 + n * 2), dv = new DataView(ab);
+  const w = (o, s) => { for (let i = 0; i < s.length; i++) dv.setUint8(o + i, s.charCodeAt(i)); };
+  w(0, "RIFF"); dv.setUint32(4, 36 + n * 2, true); w(8, "WAVEfmt ");
+  dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
+  dv.setUint32(24, sr, true); dv.setUint32(28, sr * 2, true); dv.setUint16(32, 2, true);
+  dv.setUint16(34, 16, true); w(36, "data"); dv.setUint32(40, n * 2, true);
+  for (let i = 0; i < n; i++) {
+    const s = Math.max(-1, Math.min(1, pcm[i]));
+    dv.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+  }
+  return { blob: new Blob([ab], { type: "audio/wav" }), seconds: n / sr, from };
+}
+
+/* Is there anything to listen to at all? */
+function haveTimingSource() {
+  return S.clips.length > 0 || (S.hasAudio && $("audioFile").files[0]);
+}
+
 async function autoTimeFromAudio() {
   const { pcm, sr, from } = await gatherTimingAudio();
   const duration = pcm.length / sr;
@@ -2062,9 +2086,7 @@ async function autoTimeFromAudio() {
 if ($("btnAutoTime")) {
   $("btnAutoTime").addEventListener("click", async () => {
     const btn = $("btnAutoTime");
-    if (!S.clips.length && !(S.hasAudio && $("audioFile").files[0])) {
-      say("Add your clips in step 1 first.", "warn"); return;
-    }
+    if (!haveTimingSource()) { say("Add your clips in step 1 first.", "warn"); return; }
     if (!S.words.length) { say("Paste your script in step 3 first.", "warn"); return; }
 
     startAiClock(btn, "Listening");
@@ -2186,10 +2208,7 @@ function applyTranscript(chunks, totalDuration) {
 
 async function transcribeFromVoice() {
   const btn = $("btnTranscribeLocal");
-  if (!S.clips.length && !(S.hasAudio && $("audioFile").files[0])) {
-    say("Add your clips in step 1 first.", "warn");
-    return;
-  }
+  if (!haveTimingSource()) { say("Add your clips in step 1 first.", "warn"); return; }
   startAiClock(btn, "Listening");
   try {
     setAiClockLabel(btn, "Reading the sound");
@@ -2466,7 +2485,7 @@ function stopAiClock(btn, doneLabel, holdMs) {
 if ($("btnGenerate")) {
   $("btnGenerate").addEventListener("click", async () => {
     const topic = $("topicInput").value.trim();
-    if (!topic) return alert("Enter a topic first!");
+    if (!topic) { say("Type a topic first — a few words is enough.", "warn"); return; }
     const btn = $("btnGenerate");
     const orig = btn.textContent;
     startAiClock(btn, "Generating");
@@ -2487,7 +2506,7 @@ if ($("btnGenerate")) {
 if ($("btnRewrite")) {
   $("btnRewrite").addEventListener("click", async () => {
     const text = scriptEl.value.trim();
-    if (!text) return alert("Please paste a script first!");
+    if (!text) { say("There is no script yet — paste one, or press “Write the captions from the voice”.", "warn"); return; }
     const btn = $("btnRewrite");
     const orig = btn.textContent;
     startAiClock(btn, "Rewriting");
@@ -2508,7 +2527,7 @@ if ($("btnRewrite")) {
 if ($("btnEmojify")) {
   $("btnEmojify").addEventListener("click", async () => {
     const text = scriptEl.value.trim();
-    if (!text) return alert("Please paste a script first!");
+    if (!text) { say("There is no script yet — paste one, or press “Write the captions from the voice”.", "warn"); return; }
     const btn = $("btnEmojify");
     const orig = btn.textContent;
     startAiClock(btn, "Adding emojis");
@@ -2528,13 +2547,12 @@ if ($("btnEmojify")) {
 
 if ($("btnTranscribe")) {
   $("btnTranscribe").addEventListener("click", async () => {
-    const file = $("audioFile").files[0] || $("videoFile").files[0];
-    if (!file) return alert("Please load a video or audio file first.");
+    if (!haveTimingSource()) { say("Add your clips in step 1 first.", "warn"); return; }
     const btn = $("btnTranscribe");
     const orig = btn.textContent;
     startAiClock(btn, "Reading audio");
     try {
-      const audioBlob = await extractAudioWav(file, 300);
+      const audioBlob = (await gatherTimingWav(300)).blob;
       setAiClockLabel(btn, "Transcribing");
       const schema = {
         type: "ARRAY",
@@ -2574,14 +2592,13 @@ if ($("btnTranscribe")) {
 
 if ($("btnAiSync")) {
   $("btnAiSync").addEventListener("click", async () => {
-    const file = $("audioFile").files[0] || $("videoFile").files[0];
-    if (!file) return alert("Please load a video or audio file first.");
-    if (!S.words || S.words.length === 0) return alert("Please paste your script first.");
+    if (!haveTimingSource()) { say("Add your clips in step 1 first.", "warn"); return; }
+    if (!S.words || S.words.length === 0) { say("Paste your script in step 3 first.", "warn"); return; }
     const btn = $("btnAiSync");
     const orig = btn.textContent;
     startAiClock(btn, "Reading audio");
     try {
-      const audioBlob = await extractAudioWav(file, 300);
+      const audioBlob = (await gatherTimingWav(300)).blob;
       setAiClockLabel(btn, "Aligning");
       const schema = {
         type: "ARRAY",
