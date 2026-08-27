@@ -45,17 +45,189 @@ const octx = overlay.getContext("2d");
    ============================================================ */
 let videoURL = null, audioURL = null;
 
+/* ============================================================
+   Several clips, one timeline.
+
+   Each clip keeps its own <video> element, preloaded, so moving from one
+   to the next is a switch rather than a load - no black frame in the
+   middle of a recording. Everything downstream still asks the same
+   questions (what time is it, how long is it, seek there), so captions,
+   timing and export never learn there is more than one file.
+   ============================================================ */
+S.clips = [];          // { file, url, el, duration, start }
+
+const clipEls = document.createElement("div");
+clipEls.style.display = "none";
+document.body.appendChild(clipEls);
+
+function totalClipDuration() {
+  return S.clips.reduce((a, c) => a + (isFinite(c.duration) ? c.duration : 0), 0);
+}
+
+function recomputeClipStarts() {
+  let t = 0;
+  S.clips.forEach(c => { c.start = t; t += isFinite(c.duration) ? c.duration : 0; });
+}
+
+/* Which clip is on screen at timeline second t, and where inside it. */
+function clipAt(t) {
+  if (!S.clips.length) return null;
+  for (let i = 0; i < S.clips.length; i++) {
+    const c = S.clips[i];
+    if (t < c.start + c.duration || i === S.clips.length - 1) {
+      return { i, clip: c, local: Math.max(0, Math.min(c.duration, t - c.start)) };
+    }
+  }
+  return null;
+}
+
+let activeClip = 0;
+const activeEl = () => S.clips.length ? S.clips[activeClip].el : video;
+
+function loadClipFiles(files) {
+  const list = Array.from(files || []);
+  if (!list.length) return;
+  let pending = list.length;
+
+  list.forEach(f => {
+    const url = URL.createObjectURL(f);
+    const el = document.createElement("video");
+    el.preload = "auto";
+    el.playsInline = true;
+    el.src = url;
+    clipEls.appendChild(el);
+    const clip = { file: f, url, el, duration: 0, start: 0, name: f.name };
+    S.clips.push(clip);
+    el.addEventListener("loadedmetadata", () => {
+      clip.duration = isFinite(el.duration) ? el.duration : 0;
+      if (--pending === 0) afterClipsLoaded();
+      recomputeClipStarts();
+      renderClipList();
+      syncTransport();
+    });
+    el.addEventListener("error", () => {
+      clip.duration = 0;
+      if (--pending === 0) afterClipsLoaded();
+      renderClipList();
+    });
+  });
+}
+
+function afterClipsLoaded() {
+  recomputeClipStarts();
+  const first = S.clips[0];
+  if (first) {
+    S.videoName = first.name.replace(/\.[^.]+$/, "");
+    overlay.width = first.el.videoWidth || 1080;
+    overlay.height = first.el.videoHeight || 1920;
+    $("stageEmpty").style.display = "none";
+  }
+  activeClip = 0;
+  showActiveClip();
+  renderClipList();
+  syncTransport();
+  updateSafeZoneWarning();
+}
+
+/* The on-stage <video> mirrors whichever clip is current, so the preview
+   keeps working exactly as it did with a single file. */
+function showActiveClip() {
+  const c = S.clips[activeClip];
+  if (!c) return;
+  if (video.src !== c.url) { video.src = c.url; video.load(); }
+}
+
+function removeClip(i) {
+  const c = S.clips[i];
+  if (!c) return;
+  try { URL.revokeObjectURL(c.url); } catch (e) {}
+  c.el.remove();
+  S.clips.splice(i, 1);
+  recomputeClipStarts();
+  activeClip = Math.min(activeClip, Math.max(0, S.clips.length - 1));
+  if (!S.clips.length) {
+    video.removeAttribute("src"); video.load();
+    $("stageEmpty").style.display = "";
+  } else showActiveClip();
+  renderClipList();
+  syncTransport();
+}
+
+function moveClip(i, dir) {
+  const j = i + dir;
+  if (j < 0 || j >= S.clips.length) return;
+  const [c] = S.clips.splice(i, 1);
+  S.clips.splice(j, 0, c);
+  recomputeClipStarts();
+  renderClipList();
+  syncTransport();
+}
+
+function renderClipList() {
+  const box = $("clipList");
+  if (!box) return;
+  box.replaceChildren();
+  if (!S.clips.length) { box.style.display = "none"; return; }
+  box.style.display = "";
+
+  S.clips.forEach((c, i) => {
+    const row = document.createElement("div");
+    row.className = "clip-row";
+
+    const num = document.createElement("span");
+    num.className = "clip-num";
+    num.textContent = i + 1;
+
+    const name = document.createElement("span");
+    name.className = "clip-name";
+    name.textContent = c.name;
+
+    const dur = document.createElement("span");
+    dur.className = "clip-dur";
+    dur.textContent = c.duration ? c.duration.toFixed(1) + "s" : "…";
+
+    const up = document.createElement("button");
+    up.textContent = "↑"; up.title = "Move earlier"; up.disabled = i === 0;
+    up.addEventListener("click", () => moveClip(i, -1));
+
+    const down = document.createElement("button");
+    down.textContent = "↓"; down.title = "Move later"; down.disabled = i === S.clips.length - 1;
+    down.addEventListener("click", () => moveClip(i, 1));
+
+    const del = document.createElement("button");
+    del.textContent = "✕"; del.title = "Remove this clip";
+    del.addEventListener("click", () => removeClip(i));
+
+    row.append(num, name, dur, up, down, del);
+    box.appendChild(row);
+  });
+
+  const sum = document.createElement("div");
+  sum.className = "clip-total";
+  sum.textContent = S.clips.length === 1
+    ? "1 clip · " + totalClipDuration().toFixed(1) + "s"
+    : S.clips.length + " clips joined · " + totalClipDuration().toFixed(1) + "s total";
+  box.appendChild(sum);
+}
+
 $("videoFile").addEventListener("change", e => {
-  const f = e.target.files[0]; if (!f) return;
-  if (videoURL) URL.revokeObjectURL(videoURL);
-  videoURL = URL.createObjectURL(f);
-  S.videoName = f.name.replace(/\.[^.]+$/, "");
-  video.src = videoURL;
-  video.load();
-  $("videoName").textContent = f.name;
+  const files = e.target.files;
+  if (!files || !files.length) return;
+  loadClipFiles(files);
+  $("videoName").textContent = files.length === 1
+    ? files[0].name
+    : files.length + " clips added";
   $("videoName").classList.remove("none");
-  $("stageEmpty").style.display = "none";
+  e.target.value = "";     // so the same file can be added again
 });
+
+if ($("clearClips")) {
+  $("clearClips").addEventListener("click", () => {
+    while (S.clips.length) removeClip(0);
+    $("videoName").textContent = "nothing loaded";
+    $("videoName").classList.add("none");
+  });
+}
 
 $("audioFile").addEventListener("change", e => {
   const f = e.target.files[0]; if (!f) return;
@@ -98,32 +270,102 @@ $("clearAudio").addEventListener("click", () => {
 // The element that owns the timeline. With a separate voiceover the audio leads,
 // because that is what you are tapping along to.
 const master = () => (S.hasAudio && audio.src) ? audio : video;
-const nowTime = () => master().currentTime || 0;
+
+/* Timeline position across every clip, not just the one playing. */
+const nowTime = () => {
+  if (S.hasAudio && audio.src) return audio.currentTime || 0;
+  if (!S.clips.length) return video.currentTime || 0;
+  const c = S.clips[activeClip];
+  return (c ? c.start : 0) + (video.currentTime || 0);
+};
+
 const totalTime = () => {
-  const dv = isFinite(video.duration) ? video.duration : 0;
+  const dv = S.clips.length ? totalClipDuration()
+                            : (isFinite(video.duration) ? video.duration : 0);
   const da = (S.hasAudio && isFinite(audio.duration)) ? audio.duration : 0;
   return Math.max(dv, da);
 };
 
 function playAll() {
-  if (!video.src) return;
+  if (!video.src && !S.clips.length) return;
   video.play().catch(() => {});
   if (S.hasAudio && audio.src) audio.play().catch(() => {});
 }
 function pauseAll() { video.pause(); if (audio.src) audio.pause(); }
+
+/* Seeking means picking the right clip first, then the moment inside it. */
 function seekAll(t) {
   t = Math.max(0, t);
-  if (video.src && isFinite(video.duration)) video.currentTime = Math.min(t, video.duration);
+  if (S.clips.length) {
+    const hit = clipAt(t);
+    if (hit) {
+      if (hit.i !== activeClip) {
+        activeClip = hit.i;
+        showActiveClip();
+        const go = () => { try { video.currentTime = hit.local; } catch (e) {} };
+        if (video.readyState >= 1) go();
+        else video.addEventListener("loadedmetadata", go, { once: true });
+      } else if (isFinite(video.duration)) {
+        video.currentTime = Math.min(hit.local, video.duration);
+      }
+    }
+  } else if (video.src && isFinite(video.duration)) {
+    video.currentTime = Math.min(t, video.duration);
+  }
   if (S.hasAudio && audio.src && isFinite(audio.duration)) audio.currentTime = Math.min(t, audio.duration);
+}
+
+/* When a clip runs out, roll straight into the next one. */
+function advanceClipIfEnded() {
+  if (!S.clips.length || activeClip >= S.clips.length - 1) return false;
+  const nearEnd = video.ended ||
+                  (isFinite(video.duration) && video.currentTime >= video.duration - 0.05);
+  if (!nearEnd) return false;
+  const wasPlaying = !video.paused || S.recording;
+  activeClip++;
+  showActiveClip();
+  const go = () => {
+    try { video.currentTime = 0; } catch (e) {}
+    if (wasPlaying) video.play().catch(() => {});
+  };
+  if (video.readyState >= 1) go();
+  else video.addEventListener("loadedmetadata", go, { once: true });
+  return true;
+}
+
+/* True only when the LAST clip has finished. */
+function timelineEnded() {
+  if (!S.clips.length) return video.ended;
+  return activeClip >= S.clips.length - 1 && video.ended;
 }
 function togglePlay() { (master().paused) ? playAll() : pauseAll(); }
 
 $("playBtn").addEventListener("click", togglePlay);
 $("restartBtn").addEventListener("click", () => seekAll(0));
 
+/* The output size is fixed by the FIRST clip. Later clips of a different
+   size are fitted into it, so the frame never changes shape part-way through. */
+function outputSize() {
+  const first = S.clips[0];
+  const w = (first && first.el.videoWidth) || video.videoWidth || 1080;
+  const h = (first && first.el.videoHeight) || video.videoHeight || 1920;
+  return { w, h };
+}
+
+/* Fit a clip into the output frame without distorting it. */
+function drawClipFitted(ctx, el, W, H) {
+  const vw = el.videoWidth, vh = el.videoHeight;
+  if (!vw || !vh) return;
+  const scale = Math.min(W / vw, H / vh);
+  const dw = vw * scale, dh = vh * scale;
+  if (dw < W || dh < H) { ctx.fillStyle = "#000"; ctx.fillRect(0, 0, W, H); }
+  ctx.drawImage(el, (W - dw) / 2, (H - dh) / 2, dw, dh);
+}
+
 video.addEventListener("loadedmetadata", () => {
-  overlay.width = video.videoWidth || 1080;
-  overlay.height = video.videoHeight || 1920;
+  const { w, h } = outputSize();
+  overlay.width = w;
+  overlay.height = h;
   syncTransport();
 });
 audio.addEventListener("loadedmetadata", () => {
@@ -999,6 +1241,7 @@ function frameLoop() {
   const W = overlay.width, H = overlay.height;
   octx.clearRect(0, 0, W, H);
   if ($("showSafe") && $("showSafe").checked && W && H) drawSafeZones(octx, W, H);
+  if (!video.paused) advanceClipIfEnded();
   if (video.src) {
     // keep the two elements from drifting apart
     if (S.hasAudio && audio.src && !audio.paused && isFinite(video.duration)) {
@@ -1064,7 +1307,7 @@ function groups() {
 }
 
 function buildASS() {
-  const W = video.videoWidth || 1080, H = video.videoHeight || 1920;
+  const { w: W, h: H } = outputSize();
   const fontSize = Math.round((S.sizePct / 100) * H);
   const outline = Math.max(1, +((fontSize * 0.085).toFixed(1)));
   const shadow = Math.max(0, +((fontSize * 0.05).toFixed(1)));
@@ -1196,7 +1439,7 @@ async function burnIn() {
     say("This browser can't record video. Save the .ass file and burn it in with ffmpeg instead.", "warn");
     return;
   }
-  const W = video.videoWidth, H = video.videoHeight;
+  const { w: W, h: H } = outputSize();
   if (!W || !H) { say("Load a video first.", "warn"); return; }
 
   const mimes = ["video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"];
@@ -1317,18 +1560,19 @@ async function burnIn() {
 
   const tick = () => {
     if (levelMeter) levelMeter.sample();
+    advanceClipIfEnded();               // roll into the next clip mid-recording
     const t = nowTime();
-    const clipDone = t >= dur - 0.04 || (video.ended && (!S.hasAudio || audio.ended));
+    const clipDone = t >= dur - 0.04 || (timelineEnded() && (!S.hasAudio || audio.ended));
 
     if (!clipDone) {
-      rctx.drawImage(video, 0, 0, W, H);
+      drawClipFitted(rctx, video, W, H);
       drawCaptions(rctx, W, H, t);
       say("Recording… " + Math.min(100, Math.round(t / dur * 100)) + "%");
     } else if (cardSecs > 0) {
       // Hold the last frame and fade the call to action over it.
       if (!cardStart) cardStart = performance.now();
       const elapsed = (performance.now() - cardStart) / 1000;
-      rctx.drawImage(video, 0, 0, W, H);
+      drawClipFitted(rctx, video, W, H);
       drawEndCard(rctx, W, H, elapsed / cardSecs);
       say("Recording the end card… " + Math.min(100, Math.round((elapsed / cardSecs) * 100)) + "%");
       if (elapsed >= cardSecs) { rec.stop(); return; }

@@ -352,4 +352,32 @@ kbd{
 }
 @media (prefers-reduced-motion:reduce){
   *{animation:none!important;transition:none!important;scroll-behavior:auto!important}
-}
+}
+/* ---------- clip list (step 1) ---------- */
+.clip-list{display:flex;flex-direction:column;gap:6px;margin-top:12px}
+.clip-row{
+  display:grid;grid-template-columns:22px 1fr auto auto auto auto;gap:8px;align-items:center;
+  background:var(--panel-2);border:1px solid var(--line);border-radius:8px;padding:7px 9px;
+}
+.clip-num{
+  font-family:var(--mono);font-size:10.5px;font-weight:600;color:#dbe9fb;
+  background:var(--vein-deep);border-radius:5px;text-align:center;padding:2px 0;
+}
+.clip-name{
+  font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ivory);
+}
+.clip-dur{font-family:var(--mono);font-size:11px;color:var(--ivory-dim);white-space:nowrap}
+.clip-row button{
+  background:transparent;border:1px solid var(--line);border-radius:6px;
+  width:26px;height:26px;padding:0;font-size:12px;line-height:1;color:var(--ivory-dim);cursor:pointer;
+}
+.clip-row button:hover:not(:disabled){background:#1f2d3b;color:var(--ivory)}
+.clip-row button:disabled{opacity:.3;cursor:not-allowed}
+.clip-total{
+  font-family:var(--mono);font-size:11.5px;color:var(--mint,#7fc9a4);
+  padding:4px 2px 0;
+}
+@media (max-width:520px){
+  .clip-row{grid-template-columns:22px 1fr auto;grid-auto-rows:auto}
+  .clip-row button{grid-row:2}
+}
