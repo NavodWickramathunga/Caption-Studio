@@ -190,7 +190,41 @@
   <div class="tapbar">
     <h2><i>5</i>Save your work</h2>
   </div>
-  <div style="padding:18px;" class="exports">
+  <div style="padding:0 18px 4px; display:flex; flex-direction:column; gap:12px;">
+
+    <div style="display:flex; gap:16px; flex-wrap:wrap; align-items:center;">
+      <label class="chk"><input type="checkbox" id="showSafe"> Show where Facebook's buttons cover the frame</label>
+      <label class="chk"><input type="checkbox" id="endCardOn"> Add a “follow me” end card</label>
+    </div>
+
+    <p class="hint" id="safeWarn" style="display:none;margin:0;padding:8px 10px;border-radius:7px;
+       background:rgba(224,179,65,.10);border:1px solid rgba(224,179,65,.35);color:#e8cf94;font-size:12.5px"></p>
+
+    <div id="endCardRow" style="display:none; gap:10px; flex-wrap:wrap; align-items:flex-end;">
+      <div class="field" style="flex:1; min-width:170px;">
+        <label for="endCardText">End card line</label>
+        <input type="text" id="endCardText" value="Follow for more"
+               style="width:100%;font:inherit;font-size:13px;background:var(--panel-2);color:var(--ivory);
+                      border:1px solid var(--line);border-radius:8px;padding:8px 10px">
+      </div>
+      <div class="field" style="flex:1; min-width:170px;">
+        <label for="endCardHandle">Your page name</label>
+        <input type="text" id="endCardHandle" placeholder="e.g. @AnatomyDaily"
+               style="width:100%;font:inherit;font-size:13px;background:var(--panel-2);color:var(--ivory);
+                      border:1px solid var(--line);border-radius:8px;padding:8px 10px">
+      </div>
+      <div class="field" style="width:120px;">
+        <label for="endCardSecs">Seconds <b id="endCardSecsVal">1.2</b></label>
+        <input type="range" id="endCardSecs" min="0.6" max="3" step="0.1" value="1.2">
+      </div>
+    </div>
+
+    <div id="coachNotes" style="display:none;flex-direction:column;gap:6px;font-size:12.5px;
+         color:var(--ivory-dim);background:var(--panel-2);border:1px solid var(--line);
+         border-radius:9px;padding:11px 13px"></div>
+  </div>
+
+  <div style="padding:14px 18px 18px;" class="exports">
     <button id="btnExportAss">Save .ASS captions<small>Word highlights · burn in with ffmpeg</small></button>
     <button id="btnExportSrt">Save .SRT captions<small>TikTok / YouTube Shorts</small></button>
     <button id="btnExportFbSrt">Save captions for Facebook<small>Named the way Facebook demands</small></button>

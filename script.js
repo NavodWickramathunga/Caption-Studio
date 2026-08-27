@@ -861,9 +861,69 @@ function drawCaptions(ctx, W, H, t) {
   ctx.restore();
 }
 
+/* ============================================================
+   Facebook covers parts of the frame with its own interface. Text
+   underneath is simply unreadable, and an unreadable caption wastes the
+   whole clip - so show where not to put it, and say so if you have.
+   Guides are preview-only; they are never drawn into an export.
+   ============================================================ */
+const SAFE = { top: 0.08, bottom: 0.20, right: 0.15 };   // fractions of the frame
+
+function drawSafeZones(ctx, W, H) {
+  ctx.save();
+  ctx.fillStyle = "rgba(221,95,119,0.14)";
+  ctx.fillRect(0, 0, W, H * SAFE.top);
+  ctx.fillRect(0, H * (1 - SAFE.bottom), W, H * SAFE.bottom);
+  ctx.fillRect(W * (1 - SAFE.right), H * SAFE.top, W * SAFE.right, H * (1 - SAFE.top - SAFE.bottom));
+  ctx.strokeStyle = "rgba(221,95,119,0.55)";
+  ctx.lineWidth = Math.max(2, H * 0.002);
+  ctx.setLineDash([H * 0.012, H * 0.012]);
+  ctx.beginPath();
+  ctx.moveTo(0, H * SAFE.top);              ctx.lineTo(W, H * SAFE.top);
+  ctx.moveTo(0, H * (1 - SAFE.bottom));     ctx.lineTo(W, H * (1 - SAFE.bottom));
+  ctx.moveTo(W * (1 - SAFE.right), 0);      ctx.lineTo(W * (1 - SAFE.right), H);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle = "rgba(255,255,255,0.75)";
+  ctx.font = Math.round(H * 0.016) + "px system-ui, sans-serif";
+  ctx.textAlign = "left";
+  ctx.fillText("Facebook buttons sit here", W * 0.02, H * (1 - SAFE.bottom) + H * 0.03);
+  ctx.restore();
+}
+
+/* Where would the caption band actually sit, at the current settings? */
+function captionBand(H) {
+  const fontPx = (S.sizePct / 100) * H;
+  const y = (S.posPct / 100) * H;
+  return { top: y - fontPx * 0.72, bottom: y + fontPx * 0.72 };
+}
+
+function safeZoneVerdict(H) {
+  const band = captionBand(H);
+  const topLine = H * SAFE.top, bottomLine = H * (1 - SAFE.bottom);
+  if (band.bottom > bottomLine) {
+    const over = Math.round(((band.bottom - bottomLine) / H) * 100);
+    return { ok: false, msg: `Captions run ${over}% into Facebook's button area — raise “Height on frame” until this clears.` };
+  }
+  if (band.top < topLine) {
+    return { ok: false, msg: "Captions run into the top bar — lower “Height on frame”." };
+  }
+  return { ok: true, msg: "Captions clear Facebook's interface." };
+}
+
+function updateSafeZoneWarning() {
+  const el = $("safeWarn");
+  if (!el) return;
+  const H = overlay.height || 1920;
+  const v = safeZoneVerdict(H);
+  el.style.display = v.ok ? "none" : "";
+  el.textContent = v.msg;
+}
+
 function frameLoop() {
   const W = overlay.width, H = overlay.height;
   octx.clearRect(0, 0, W, H);
+  if ($("showSafe") && $("showSafe").checked && W && H) drawSafeZones(octx, W, H);
   if (video.src) {
     // keep the two elements from drifting apart
     if (S.hasAudio && audio.src && !audio.paused && isFinite(video.duration)) {
@@ -1135,15 +1195,32 @@ async function burnIn() {
   else playAll();
 
   const wallStart = performance.now();
+  const cardSecs = endCardSeconds();
+  let cardStart = 0;              // wall-clock ms when the end card began
+
   const tick = () => {
-    rctx.drawImage(video, 0, 0, W, H);
     const t = nowTime();
-    drawCaptions(rctx, W, H, t);
-    say("Recording… " + Math.min(100, Math.round(t / dur * 100)) + "%");
-    const finished = t >= dur - 0.04 || (video.ended && (!S.hasAudio || audio.ended));
+    const clipDone = t >= dur - 0.04 || (video.ended && (!S.hasAudio || audio.ended));
+
+    if (!clipDone) {
+      rctx.drawImage(video, 0, 0, W, H);
+      drawCaptions(rctx, W, H, t);
+      say("Recording… " + Math.min(100, Math.round(t / dur * 100)) + "%");
+    } else if (cardSecs > 0) {
+      // Hold the last frame and fade the call to action over it.
+      if (!cardStart) cardStart = performance.now();
+      const elapsed = (performance.now() - cardStart) / 1000;
+      rctx.drawImage(video, 0, 0, W, H);
+      drawEndCard(rctx, W, H, elapsed / cardSecs);
+      say("Recording the end card… " + Math.min(100, Math.round((elapsed / cardSecs) * 100)) + "%");
+      if (elapsed >= cardSecs) { rec.stop(); return; }
+    } else {
+      rec.stop();
+      return;
+    }
+
     // backstop: never spin forever if the voice fails to start at all
-    const stalled = performance.now() - wallStart > (dur + 20) * 1000;
-    if (finished || stalled) { rec.stop(); return; }
+    if (performance.now() - wallStart > (dur + cardSecs + 20) * 1000) { rec.stop(); return; }
     requestAnimationFrame(tick);
   };
   requestAnimationFrame(tick);
@@ -1501,6 +1578,52 @@ function timeWordsFromSegments(segments, mediaDuration) {
   return { segments: segments.length, speechSeconds: +totalSpeech.toFixed(2) };
 }
 
+/* Silence is where viewers leave. The speech map already knows where it is,
+   so report the gaps worth cutting instead of letting you find out later. */
+const DEAD_AIR_MIN = 0.45;
+
+function findDeadAir(segments, duration) {
+  const gaps = [];
+  if (!segments.length) return gaps;
+  if (segments[0].start >= DEAD_AIR_MIN) {
+    gaps.push({ start: 0, end: segments[0].start, where: "at the start" });
+  }
+  for (let i = 1; i < segments.length; i++) {
+    const g = segments[i].start - segments[i - 1].end;
+    if (g >= DEAD_AIR_MIN) {
+      gaps.push({ start: segments[i - 1].end, end: segments[i].start, where: "in the middle" });
+    }
+  }
+  const tail = (duration || 0) - segments[segments.length - 1].end;
+  if (tail >= DEAD_AIR_MIN) {
+    gaps.push({ start: segments[segments.length - 1].end, end: duration, where: "at the end" });
+  }
+  return gaps;
+}
+
+function describeDeadAir(gaps) {
+  if (!gaps.length) return "";
+  const worst = gaps.slice().sort((a, b) => (b.end - b.start) - (a.end - a.start))[0];
+  const total = gaps.reduce((a, g) => a + (g.end - g.start), 0);
+  const one = (worst.end - worst.start).toFixed(1) + "s of silence " + worst.where +
+              " (" + worst.start.toFixed(1) + "s)";
+  return gaps.length === 1
+    ? one + " — trimming it holds attention."
+    : gaps.length + " silent gaps, " + total.toFixed(1) + "s in total. Longest: " + one + ".";
+}
+
+/* Words per second, so slow stretches are visible before you post. */
+function pacingReport() {
+  const w = S.words.filter(x => x.start !== null && x.end !== null);
+  if (w.length < 3) return "";
+  const span = w[w.length - 1].end - w[0].start;
+  if (span <= 0) return "";
+  const wps = w.length / span;
+  if (wps < 2.0) return `Pace is ${wps.toFixed(1)} words/sec — slow for a Reel. Try speeding the voice up.`;
+  if (wps > 4.5) return `Pace is ${wps.toFixed(1)} words/sec — very fast; captions may be hard to read.`;
+  return `Pace is ${wps.toFixed(1)} words/sec — good for short-form.`;
+}
+
 async function autoTimeFromAudio(file) {
   const AC = window.AudioContext || window.webkitAudioContext;
   const ctx = new AC();
@@ -1512,6 +1635,7 @@ async function autoTimeFromAudio(file) {
   }
   const segs = detectSpeechSegments(decoded.getChannelData(0), decoded.sampleRate);
   const report = timeWordsFromSegments(segs, decoded.duration);
+  report.deadAir = findDeadAir(segs, decoded.duration);
   return report;
 }
 
@@ -1530,14 +1654,108 @@ if ($("btnAutoTime")) {
       renderChips();
       refreshExports();
       const heard = report.segments === 1 ? "1 stretch of speech" : report.segments + " stretches of speech";
+      const notes = [describeDeadAir(report.deadAir || []), pacingReport()].filter(Boolean);
       say(`Timed ${S.words.length} words from ${heard} (${report.speechSeconds}s of talking). ` +
-          `Play it back and click any word that looks off.`, "ok");
+          `Click any word that looks off.`, "ok");
+      showCoachNotes(notes, (report.deadAir || []).length > 0);
       stopAiClock(btn, "✅ Timed!", 2200);
     } catch (e) {
       stopAiClock(btn);
       say(String(e.message || e), "warn");
     }
   });
+}
+
+/* ---- wiring for the safe zones and end card ---- */
+if ($("showSafe")) {
+  $("showSafe").addEventListener("change", updateSafeZoneWarning);
+}
+if ($("endCardOn")) {
+  $("endCardOn").addEventListener("change", e => {
+    $("endCardRow").style.display = e.target.checked ? "flex" : "none";
+  });
+}
+if ($("endCardSecs")) {
+  const sync = () => { $("endCardSecsVal").textContent = parseFloat($("endCardSecs").value).toFixed(1); };
+  $("endCardSecs").addEventListener("input", sync);
+  sync();
+}
+// moving the caption changes whether it clears Facebook's interface
+["pos", "size", "wps"].forEach(id => {
+  if ($(id)) $(id).addEventListener("input", updateSafeZoneWarning);
+});
+video.addEventListener("loadedmetadata", updateSafeZoneWarning);
+
+/* ---- the coaching panel: what would cost you views ---- */
+function showCoachNotes(notes, isWarning) {
+  const box = $("coachNotes");
+  if (!box) return;
+  if (!notes.length) { box.style.display = "none"; return; }
+  box.style.display = "";
+  box.style.borderColor = isWarning ? "rgba(224,179,65,.4)" : "var(--line)";
+  box.replaceChildren();
+  notes.forEach(n => {
+    const p = document.createElement("div");
+    p.style.cssText = "display:flex;gap:8px;align-items:flex-start";
+    const dot = document.createElement("span");
+    dot.textContent = /silen|slow|fast/i.test(n) ? "⚠" : "✓";
+    dot.style.cssText = "flex:none;color:" + (/silen|slow|fast/i.test(n) ? "#e0b341" : "#7fc9a4");
+    const t = document.createElement("span");
+    t.textContent = n;
+    p.append(dot, t);
+    box.appendChild(p);
+  });
+}
+
+/* ============================================================
+   The end card: one second that asks for the follow.
+   Drawn onto the recording after the clip finishes.
+   ============================================================ */
+function endCardSeconds() {
+  const on = $("endCardOn");
+  return (on && on.checked) ? Math.max(0.6, Math.min(3, parseFloat($("endCardSecs").value) || 1.2)) : 0;
+}
+
+function drawEndCard(ctx, W, H, progress) {
+  const line1 = ($("endCardText").value || "Follow for more").trim();
+  const line2 = ($("endCardHandle").value || "").trim();
+
+  ctx.save();
+  ctx.fillStyle = "rgba(8,12,16," + (0.55 + 0.35 * Math.min(1, progress * 3)) + ")";
+  ctx.fillRect(0, 0, W, H);
+
+  const fit = (text, targetPx, maxW) => {
+    let px = targetPx;
+    ctx.font = px + "px " + FONT_STACK;
+    while (ctx.measureText(text).width > maxW && px > 10) {
+      px *= maxW / ctx.measureText(text).width;
+      ctx.font = px + "px " + FONT_STACK;
+    }
+    return px;
+  };
+
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.lineJoin = "round";
+
+  const big = fit(line1.toUpperCase(), H * 0.075, W * 0.84);
+  ctx.font = big + "px " + FONT_STACK;
+  ctx.lineWidth = big * 0.17;
+  ctx.strokeStyle = "#000";
+  ctx.strokeText(line1.toUpperCase(), W / 2, H * 0.46);
+  ctx.fillStyle = S.hlColor || "#FFD400";
+  ctx.fillText(line1.toUpperCase(), W / 2, H * 0.46);
+
+  if (line2) {
+    const small = fit(line2, H * 0.038, W * 0.8);
+    ctx.font = small + "px " + FONT_STACK;
+    ctx.lineWidth = small * 0.17;
+    ctx.strokeStyle = "#000";
+    ctx.strokeText(line2, W / 2, H * 0.56);
+    ctx.fillStyle = "#FFFFFF";
+    ctx.fillText(line2, W / 2, H * 0.56);
+  }
+  ctx.restore();
 }
 
 /* ============================================================
