@@ -15,3 +15,6 @@ $RECYCLE.BIN/
 *.mp3
 *.wav
 *.m4a
+
+# one-off patch scripts, already applied
+_spent/

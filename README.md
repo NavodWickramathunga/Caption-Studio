@@ -1,100 +1,132 @@
 # Caption Studio
 
-Karaoke-style captions for short vertical videos, tapped in by hand.
+Karaoke-style captions for short vertical videos — word-level timing without paying
+a captioning service.
 
-2–4 words on screen at a time, heavy uppercase, white with a thick black outline,
-and the word currently being spoken flips to yellow. The word-level timing comes
-from you tapping the spacebar in rhythm with your own voiceover — no captioning
-service, no subscription, no account.
+Two to four words on screen at a time, heavy uppercase, thick black outline, and the
+word being spoken flipping to yellow. The look is the easy part; the expensive part
+is knowing *exactly* when each word is spoken. Caption Studio produces that three
+different ways, and two of them never touch the internet.
 
-**Open it here → https://navodwickramathunga.github.io/Caption-Studio/**
+**Open it → https://navodwickramathunga.github.io/Caption-Studio/**
 
 ---
 
-## Nothing leaves your machine
+## Your clip stays on your machine
 
-Your video and audio never get uploaded. The page reads them straight off disk
-with `URL.createObjectURL`, and every frame is drawn locally in your browser.
-There are no API calls, no analytics, no telemetry.
+Video and audio are read straight off disk with `URL.createObjectURL` and every frame
+is drawn locally. Nothing is uploaded.
 
-The only network request the page makes is to Google Fonts for the Anton
-typeface. If that is blocked, the tool falls back to Impact / Arial Narrow and
-keeps working.
+Two features are the exception, and both are optional:
 
-## How to use it
+- **Natural voices** — spoken by Microsoft's servers, so your *script* is sent there.
+  Your video is not. Tick "Offline voices only" to avoid this entirely.
+- **The AI buttons** — send your script, or ~300 KB of audio, to Google's Gemini.
+  Your video is never sent.
 
-1. **Choose your video** — a vertical clip from disk.
-2. **Your voiceover** — either let the tool speak your script, or load an audio file.
-3. **Paste your script** — plain text. Punctuation is dropped from the captions,
-   word order is kept exactly.
-4. **Check the timings** — if the tool spoke the script, this is already filled in.
-   Otherwise press Play and hit `Space` on each word as you hear it.
-   - `Space` — mark this word and move on
-   - `Backspace` — undo one mark
-   - `R` — clear everything and start over
-   - Click any word — re-record from that word onward
-5. **Set the look** — words on screen, text size, height on frame, highlight colour.
-6. **Save your work.**
+Everything else — timing, captions, previews, all exports — runs offline.
 
-## The voiceover times itself
+## Getting a timing
 
-Pick a voice, hit **“Speak it and time the words”**, and the tool reads your script
-aloud while writing down when each word actually lands. Step 4 fills in on its own —
-no tapping.
+Every word needs a start and an end. Three ways to get there:
 
-It works because the speech engine reports a word boundary as it reaches each word.
-The video is started at the moment the voice starts, so both share a clock, and every
-boundary is stamped against the video's own timeline. If the engine skips a boundary,
-the missing word is interpolated between its neighbours and the status line tells you
-how many were estimated.
+| Method | How it works | Needs |
+| --- | --- | --- |
+| **Speak it and time the words** | The browser reads your script aloud and reports each word as it says it | nothing |
+| **⏱ Time it for me** | Reads the loudness of an audio file to find the talking, then spreads words across it by syllable count | nothing |
+| **Spacebar** | You tap along in rhythm | nothing |
 
-If the voiceover doesn't match the length of the clip, a **fit to the video** button
-appears and offers the speaking rate that would make it line up.
+They all write to the same list, so you can auto-time first and fix a few words by hand.
 
-**Voices are offline by default.** The tool lists only voices installed on your
-machine (on Windows, the “Microsoft …” ones) — those speak locally and your script
-goes nowhere. Untick *Offline voices only* and you get the browser's network voices
-too, but then your script is sent to the voice provider to be spoken. The tool warns
-you before you do it.
+### Tap controls
 
-Not every voice reports word boundaries. If you pick one that doesn't, the tool says
-so and you can either switch voices or tap the words in by hand.
+- `Space` — mark this word and move on
+- `Backspace` — undo one mark
+- `R` — clear everything
+- Click a word — re-record from there
+- Shift-click a word — mark it as important
+
+## Getting the voice inside the video
+
+Facebook and YouTube need the voiceover **inside** the file. How that works depends
+on where the voice comes from:
+
+- **An audio file you load** — captured directly. Nothing to configure. **Use this.**
+- **A voice the browser speaks** — the browser cannot hand its own speech to a
+  recorder, so it has to capture the tab's sound. You must tick
+  **"Also share tab audio"** in the box that appears, or the video comes out silent.
+
+The tool checks the finished recording and tells you if it ended up with no sound.
+
+## Voice Match
+
+`voice-match.html` — for finding a voice that matches a clip you like.
+
+Load the clip and its **pitch is measured on your machine** to decide male or female,
+which halves the list immediately. Language and quality filters take a 331-voice
+catalogue down to about 24. Those play back to back on one button: `S` stars the one
+you're hearing, `→` skips, `Esc` stops.
+
+Picking one hands it to Caption Studio, switching off the offline filter if the voice
+needs it. Voices are per-browser — a voice chosen in Edge is not installed in Chrome,
+and the tool says so rather than failing quietly.
+
+There is also an AI option that listens to your clip and recommends voices, which
+needs a Gemini API key.
+
+## Before you post
+
+- **Safe zones** — Facebook covers the top, bottom and right of the frame with its
+  own interface. Turn the guides on and the tool warns you if your captions sit
+  underneath, where nobody can read them.
+- **Dead air** — silences over 0.45s get flagged with their length and position.
+  Silence is where viewers leave.
+- **Pacing** — words per second, flagged if it drifts slow or too fast.
+- **End card** — an optional closing second asking for the follow, with your page name.
 
 ## What you can save
 
 | Format | Use it for |
 | --- | --- |
-| `.ass` | The real one. Feed it to ffmpeg for a proper encode — carries the per-word highlight colours. |
-| `.srt` | One cue per word group, no highlighting. For platform auto-captions. |
-| `.json` | `{"words":[{"text","start","end"}]}` — reuse the timings elsewhere. |
-| `.webm` | Captions burned straight into the video, recorded in the browser in real time. |
-
-A spoken voiceover has no audio file behind it, so it can't be captured the usual
-way. When you save a burned-in video with a generated voice, the browser asks to
-share this tab — tick **“Also share tab audio”** and the voice goes into the
-recording. Cancel it and you still get the video, just silent.
+| `.ass` | Word-by-word highlight colours. Burn in with ffmpeg for the sharpest result. |
+| `.srt` | TikTok and YouTube Shorts. |
+| `.en_US.srt` | Facebook. It only accepts SRT, and only with that exact naming. |
+| `.json` | Raw word timings, to reuse. |
+| `.webm` | The video with captions and voice burned in, recorded in the browser. |
 
 ### Burning in with ffmpeg
 
 ```
-ffmpeg -i clip.mp4 -vf "ass=captions.ass" -c:a copy out.mp4
+ffmpeg -i clip.mp4 -vf "ass=captions.ass" -c:v libx264 -crf 20 -pix_fmt yuv420p -c:a aac out.mp4
 ```
 
-The `.ass` file asks for the **Anton** font, so Anton needs to be installed on
-whichever machine runs ffmpeg.
+Needs the **Anton** font installed on the machine running ffmpeg.
 
-## Running it
+### Converting the recording for Facebook Reels
 
-It is one self-contained `index.html` — no build step, no npm, no server.
+Reels want MP4, not WebM:
 
-- **Hosted:** GitHub Pages serves it from this repo. Open the link above.
-- **Local:** download `index.html` and double-click it. It works from `file://`.
+```
+ffmpeg -i captioned.webm -c:v libx264 -preset slow -crf 20 -pix_fmt yuv420p -c:a aac -b:a 128k out.mp4
+```
 
-Current Chrome and Edge. The burned-in `.webm` export needs `MediaRecorder`; if
-your browser doesn't support it, the tool says so and points you at the `.ass`
-export instead.
+## Browsers
 
-## Repo contents
+Current Chrome and Edge. They are not equivalent:
 
-- `index.html` — the entire tool
-- `BUILD-PROMPT.md` — the original spec it was built from
+| | Chrome | Edge |
+| --- | --- | --- |
+| Everything below | ✅ | ✅ |
+| Natural voices | only 3 basic ones | **322** |
+| Gemini AI buttons | ✅ | may be blocked by extensions or policy |
+
+The 322 natural voices are an Edge feature — they are not installed on your computer
+and Chrome cannot reach them.
+
+## Files
+
+- `index.html` / `script.js` / `style.css` — the captioning tool
+- `voice-match.html` / `voice-match.js` / `voice-match.css` — the voice finder
+- `server.js`, `package.json` — optional local Express host; GitHub Pages serves the
+  site as static files and does not use these
+- `BUILD-PROMPT.md` — the original spec
