@@ -1219,11 +1219,14 @@ async function burnIn() {
     // own audio — which the browser will ask you to allow. Say what to tick
     // before the box appears, because getting it wrong costs a whole render.
     const ok = window.confirm(
-      "To put the voice inside the video, the browser needs to record this tab's sound.\n\n" +
+      "To put the voice inside the video, the browser has to record the sound.\n\n" +
       "In the box that appears next:\n" +
-      "  1. Choose THIS TAB\n" +
-      "  2. Tick “Also share tab audio”  ← without this the video is silent\n" +
+      "  1. Choose ENTIRE SCREEN  (not the tab — tab audio records silence)\n" +
+      "  2. Tick “Also share system audio”  ← without this the video is silent\n" +
       "  3. Press Share\n\n" +
+      "Only the sound is used. The screen picture is discarded immediately —\n" +
+      "the video you get is your own clip, not a recording of your screen.\n\n" +
+      "Tip: run “Test the sound first” once to confirm this works.\n\n" +
       "Press OK to continue, or Cancel to stop."
     );
     if (!ok) {
@@ -1234,7 +1237,10 @@ async function burnIn() {
     }
     try {
       tabStream = await navigator.mediaDevices.getDisplayMedia({
-        video: true, audio: true, preferCurrentTab: true
+        // No preferCurrentTab: Windows plays the speech outside the tab, so tab
+        // audio records silence. The whole picker must stay available so
+        // "Entire Screen" with system audio can be chosen instead.
+        video: true, audio: true, systemAudio: "include"
       });
       const at = tabStream.getAudioTracks();
       tabStream.getVideoTracks().forEach(t => t.stop());   // we draw our own frames
@@ -1288,8 +1294,9 @@ async function burnIn() {
       say(`Saved ${baseName()}-captioned.webm — with sound (level ${(peak * 100).toFixed(0)}%).`, "ok");
     } else if (speaking) {
       say(`Saved ${baseName()}-captioned.webm — but it came out SILENT (level ${(peak * 100).toFixed(1)}%). ` +
-          `The browser played the voice outside the tab, so tab audio couldn't hear it. ` +
-          `Press “Test the sound” and choose “Entire Screen” with “Also share system audio” instead.`, "warn");
+          `You most likely shared a tab or window instead of “Entire Screen”. ` +
+          `Press “🔊 Test the sound first”, pick Entire Screen and tick “Also share system audio”, ` +
+          `then record again.`, "warn");
     } else {
       say(`Saved ${baseName()}-captioned.webm — but it has NO SOUND. ` +
           `The voiceover track couldn't be captured.`, "warn");
@@ -1860,21 +1867,26 @@ async function testVoiceCapture() {
 
   const ok = window.confirm(
     "This checks whether your voice can be recorded, before you spend a full render.\n\n" +
-    "In the box that appears:\n" +
-    "  1. Choose THIS TAB\n" +
-    "  2. Tick “Also share tab audio”\n" +
-    "  3. Press Share\n\n" +
-    "If the test comes back silent, I'll tell you what to try instead."
+    "In the box that appears, choose ENTIRE SCREEN — not the tab.\n" +
+    "Then tick “Also share system audio” and press Share.\n\n" +
+    "Windows plays the speech outside the browser tab, so “tab audio” records\n" +
+    "silence. Sharing the screen with system audio is what actually captures it.\n\n" +
+    "Only the sound is kept — the picture is thrown away immediately."
   );
   if (!ok) return;
 
   startAiClock(btn, "Testing");
   let ds = null, meter = null;
   try {
-    ds = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true, preferCurrentTab: true });
+    // The full picker must stay available so "Entire Screen" can be chosen;
+    // restricting it to this tab guarantees a silent capture on Windows.
+    ds = await navigator.mediaDevices.getDisplayMedia({
+      video: true, audio: true, systemAudio: "include"
+    });
     ds.getVideoTracks().forEach(t => t.stop());
     if (!ds.getAudioTracks().length) {
-      throw new Error("No sound was shared at all — the “Also share tab audio” box wasn’t ticked.");
+      throw new Error("No sound was shared at all — the “Also share system audio” box wasn’t ticked. " +
+                      "Run this again, choose Entire Screen, and tick that box.");
     }
     meter = makeLevelMeter(ds);
     if (!meter) throw new Error("Couldn't listen to the shared sound on this browser.");
@@ -1898,9 +1910,10 @@ async function testVoiceCapture() {
       say(`Sound captured — level ${(peak * 100).toFixed(0)}%. Your voice WILL be in the video. ` +
           `Share the same way when you record.`, "ok");
     } else {
-      say(`No sound came through (level ${(peak * 100).toFixed(1)}%). This browser is playing the voice ` +
-          `outside the tab, so “tab audio” can't hear it. Try again and choose ` +
-          `“Entire Screen” with “Also share system audio” instead — that captures it.`, "warn");
+      say(`Silent — nothing was captured (level ${(peak * 100).toFixed(1)}%). ` +
+          `You most likely shared a tab or a window. Run this again and pick ` +
+          `“Entire Screen”, then tick “Also share system audio”. ` +
+          `Also check your speakers aren't muted — the sound has to be playing to be recorded.`, "warn");
     }
   } catch (e) {
     const why = String((e && e.message) || e);
