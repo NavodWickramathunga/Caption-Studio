@@ -2105,6 +2105,125 @@ if ($("endCardSecs")) {
 });
 video.addEventListener("loadedmetadata", updateSafeZoneWarning);
 
+/* ============================================================
+   Write the captions from the voice itself.
+
+   Pasting a script only works if it matches what was actually said. When
+   the narration came with the clip, it often doesn't - so listen to the
+   audio, write down the words, and time them. Runs on this machine: the
+   model downloads once (about 40 MB) and is then cached by the browser.
+   ============================================================ */
+const WHISPER_URL = "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.5";
+const WHISPER_MODEL = "onnx-community/whisper-tiny.en";
+let whisperPipe = null;
+
+async function getWhisper(onProgress) {
+  if (whisperPipe) return whisperPipe;
+  const { pipeline } = await import(WHISPER_URL);
+  whisperPipe = await pipeline("automatic-speech-recognition", WHISPER_MODEL, {
+    dtype: "q8", device: "wasm",
+    progress_callback: p => {
+      if (p && p.progress != null && onProgress) onProgress(Math.round(p.progress));
+    }
+  });
+  return whisperPipe;
+}
+
+/* Whisper gives sentences with times. Words inside a sentence are spread
+   across it by how long each takes to say - the same weighting the
+   offline timer uses, which already tested well. */
+function applyTranscript(chunks, totalDuration) {
+  let text = "";
+  const ranges = [];
+  chunks.forEach(ch => {
+    const piece = (ch.text || "").trim();
+    if (!piece) return;
+    const from = text.length ? text.length + 1 : 0;
+    text += (text ? " " : "") + piece;
+    let [t0, t1] = ch.timestamp || [];
+    if (t0 == null) t0 = ranges.length ? ranges[ranges.length - 1].t1 : 0;
+    if (t1 == null) t1 = totalDuration;
+    ranges.push({ from, to: text.length, t0, t1 });
+  });
+  if (!text) throw new Error("Nothing was said in that audio — or it was too quiet to make out.");
+
+  scriptEl.value = text;
+  parseScript();                       // builds the word list, with character positions
+  if (!S.words.length) throw new Error("Couldn't turn that into words.");
+
+  // hand each word to the sentence it came from
+  const buckets = ranges.map(() => []);
+  S.words.forEach((w, i) => {
+    let r = ranges.findIndex(rg => w.pos >= rg.from && w.pos < rg.to);
+    if (r < 0) r = ranges.length - 1;
+    buckets[r].push(i);
+  });
+
+  buckets.forEach((idxs, r) => {
+    if (!idxs.length) return;
+    const { t0, t1 } = ranges[r];
+    const span = Math.max(0.12, t1 - t0);
+    const weights = idxs.map(i => spokenWeight(S.words[i].text));
+    const sum = weights.reduce((a, b) => a + b, 0) || 1;
+    let t = t0;
+    idxs.forEach((i, k) => {
+      const d = span * (weights[k] / sum);
+      S.words[i].start = t;
+      S.words[i].end = Math.min(t1, t + d);
+      t += d;
+    });
+  });
+
+  // keep it strictly in order
+  for (let i = 0; i < S.words.length; i++) {
+    const w = S.words[i];
+    if (w.start === null) w.start = i ? S.words[i - 1].end : 0;
+    if (i && w.start < S.words[i - 1].end) w.start = S.words[i - 1].end;
+    if (w.end === null || w.end <= w.start) w.end = w.start + 0.1;
+  }
+  return { words: S.words.length, sentences: ranges.length, text };
+}
+
+async function transcribeFromVoice() {
+  const btn = $("btnTranscribeLocal");
+  if (!S.clips.length && !(S.hasAudio && $("audioFile").files[0])) {
+    say("Add your clips in step 1 first.", "warn");
+    return;
+  }
+  startAiClock(btn, "Listening");
+  try {
+    setAiClockLabel(btn, "Reading the sound");
+    const { pcm, sr, from } = await gatherTimingAudio();
+    const seconds = pcm.length / sr;
+
+    let peak = 0;
+    for (let i = 0; i < pcm.length; i += 7) { const v = Math.abs(pcm[i]); if (v > peak) peak = v; }
+    if (peak < 0.005) throw new Error("That audio is silent — there is no voice to write down.");
+
+    setAiClockLabel(btn, "Fetching the listener (first time only)");
+    const asr = await getWhisper(pct => setAiClockLabel(btn, "Downloading listener " + pct + "%"));
+
+    setAiClockLabel(btn, "Writing down " + Math.round(seconds) + "s");
+    const out = await asr(pcm, { return_timestamps: true, chunk_length_s: 30 });
+
+    const res = applyTranscript(out.chunks || [{ text: out.text, timestamp: [0, seconds] }], seconds);
+    renderChips();
+    refreshExports();
+    updateSafeZoneWarning();
+    say(`Wrote ${res.words} words from ${from} and timed them. ` +
+        `The script box now holds exactly what was said — check step 4 and click any word that looks off.`, "ok");
+    showCoachNotes([pacingReport()].filter(Boolean), false);
+    stopAiClock(btn, "✅ Written!", 2200);
+  } catch (e) {
+    stopAiClock(btn);
+    const why = String((e && e.message) || e);
+    say(/Failed to fetch|NetworkError|dynamically imported/i.test(why)
+        ? "Couldn't download the listener — check your connection and try again. It only downloads once."
+        : why, "warn");
+  }
+}
+if ($("btnTranscribeLocal")) $("btnTranscribeLocal").addEventListener("click", transcribeFromVoice);
+
 /* ---- the coaching panel: what would cost you views ---- */
 function showCoachNotes(notes, isWarning) {
   const box = $("coachNotes");
