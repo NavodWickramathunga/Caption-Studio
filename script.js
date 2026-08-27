@@ -59,6 +59,20 @@ $("videoFile").addEventListener("change", e => {
 
 $("audioFile").addEventListener("change", e => {
   const f = e.target.files[0]; if (!f) return;
+  S.audioFileName = f.name;
+
+  // Catch the obvious mistakes before the media element even tries.
+  const ext = f.name.includes(".") ? f.name.toLowerCase().split(".").pop() : "";
+  if (NOT_AUDIO[ext]) {
+    $("audioName").textContent =
+      `That's ${NOT_AUDIO[ext]}, not a voiceover — this needs an audio file (MP3, WAV, M4A) or a video.`;
+    $("audioName").classList.add("none");
+    e.target.value = "";
+    S.hasAudio = false; video.muted = false;
+    syncTransport();
+    return;
+  }
+
   if (audioURL) URL.revokeObjectURL(audioURL);
   audioURL = URL.createObjectURL(f);
   audio.src = audioURL; audio.load();
@@ -121,10 +135,26 @@ audio.addEventListener("loadedmetadata", () => {
   }
   syncTransport();
 });
+/* Subtitle and text files get picked here by mistake, because they are the
+   other thing this tool produces. Say what the file actually is rather than
+   blaming the sound. */
+const NOT_AUDIO = {
+  ass: "a subtitle file", ssa: "a subtitle file", srt: "a subtitle file",
+  vtt: "a subtitle file", json: "a timings file", txt: "a text file",
+  pdf: "a document", doc: "a document", docx: "a document",
+  png: "an image", jpg: "an image", jpeg: "an image", gif: "an image"
+};
+
 audio.addEventListener("error", () => {
   if (!audio.src) return;
-  $("audioName").textContent = "couldn't read the sound from that file — try another";
-  $("audioName").classList.add("none");
+  const name = (S.audioFileName || "").toLowerCase();
+  const ext = name.includes(".") ? name.split(".").pop() : "";
+  const kind = NOT_AUDIO[ext];
+  const el = $("audioName");
+  el.textContent = kind
+    ? `That's ${kind}, not a voiceover — this needs an audio file (MP3, WAV, M4A) or a video.`
+    : "Couldn't read any sound from that file — this needs an audio file (MP3, WAV, M4A) or a video.";
+  el.classList.add("none");
   S.hasAudio = false;
   video.muted = false;
   syncTransport();
