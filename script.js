@@ -1181,6 +1181,7 @@ async function burnIn() {
   // Getting the sound in depends on where the voiceover comes from.
   const speaking = S.voMode === "generated" && CAN_SPEAK && $("voice").value !== "";
   let tabStream = null;
+  let levelMeter = null;
 
   if (speaking) {
     // A spoken voice has no media element behind it, so there is nothing to
@@ -1239,7 +1240,9 @@ async function burnIn() {
   await new Promise(r => setTimeout(r, 200));
 
   rec.onstop = () => {
-    const hadAudio = stream.getAudioTracks().length > 0;
+    const peak = levelMeter ? levelMeter.peak() : 0;
+    const hadAudio = stream.getAudioTracks().length > 0 && peak >= AUDIBLE;
+    if (levelMeter) levelMeter.close();
     stream.getTracks().forEach(t => { if (t.kind === "video") t.stop(); });
     if (tabStream) tabStream.getTracks().forEach(t => t.stop());
     if (speaking) stopSpeaking();
@@ -1252,13 +1255,14 @@ async function burnIn() {
        is a wasted render, so say so plainly rather than letting it be
        discovered after upload. */
     if (hadAudio) {
-      say("Saved " + baseName() + "-captioned.webm — with sound.", "ok");
+      say(`Saved ${baseName()}-captioned.webm — with sound (level ${(peak * 100).toFixed(0)}%).`, "ok");
+    } else if (speaking) {
+      say(`Saved ${baseName()}-captioned.webm — but it came out SILENT (level ${(peak * 100).toFixed(1)}%). ` +
+          `The browser played the voice outside the tab, so tab audio couldn't hear it. ` +
+          `Press “Test the sound” and choose “Entire Screen” with “Also share system audio” instead.`, "warn");
     } else {
-      say("Saved " + baseName() + "-captioned.webm — but it has NO SOUND. " +
-          (speaking
-            ? "A voice spoken by the browser can only be recorded if you tick “Also share tab audio” in the sharing box. " +
-              "Easier: make the voiceover as a file, load it under “Load a file”, and record again."
-            : "The voiceover track couldn't be captured. Try loading the voiceover under “Load a file”."), "warn");
+      say(`Saved ${baseName()}-captioned.webm — but it has NO SOUND. ` +
+          `The voiceover track couldn't be captured.`, "warn");
     }
     refreshExports();
   };
@@ -1267,11 +1271,15 @@ async function burnIn() {
   if (speaking) speakScript(false);   // starts the video itself, in step with the voice
   else playAll();
 
+  // watch the level for the whole recording, so silence is caught not guessed
+  levelMeter = makeLevelMeter(stream);
+
   const wallStart = performance.now();
   const cardSecs = endCardSeconds();
   let cardStart = 0;              // wall-clock ms when the end card began
 
   const tick = () => {
+    if (levelMeter) levelMeter.sample();
     const t = nowTime();
     const clipDone = t >= dur - 0.04 || (video.ended && (!S.hasAudio || audio.ended));
 
@@ -1779,6 +1787,103 @@ function showCoachNotes(notes, isWarning) {
     box.appendChild(p);
   });
 }
+
+/* ============================================================
+   Is there actually sound on this stream?
+
+   A captured audio track can exist and still be pure silence - which is
+   how a render comes back mute despite everything "working". So measure
+   the real level rather than trusting the track's presence.
+   ============================================================ */
+function makeLevelMeter(stream) {
+  const AC = window.AudioContext || window.webkitAudioContext;
+  const tracks = stream.getAudioTracks();
+  if (!AC || !tracks.length) return null;
+  try {
+    const ac = new AC();
+    if (ac.state === "suspended") ac.resume().catch(() => {});
+    const src = ac.createMediaStreamSource(new MediaStream([tracks[0]]));
+    const an = ac.createAnalyser();
+    an.fftSize = 2048;
+    src.connect(an);
+    const buf = new Float32Array(an.fftSize);
+    let peak = 0;
+    const sample = () => {
+      an.getFloatTimeDomainData(buf);
+      for (let i = 0; i < buf.length; i++) {
+        const v = Math.abs(buf[i]);
+        if (v > peak) peak = v;
+      }
+      return peak;
+    };
+    return { sample, peak: () => peak, close: () => { try { ac.close(); } catch (e) {} } };
+  } catch (e) { return null; }
+}
+
+const AUDIBLE = 0.02;   // anything under this is silence for practical purposes
+
+/* A five-second dry run, so a mute render is discovered before it costs a
+   full recording. Speaks a short line and reports what was captured. */
+async function testVoiceCapture() {
+  const btn = $("btnTestSound");
+  if (!CAN_SPEAK || $("voice").value === "") { say("Pick a voice in step 2 first.", "warn"); return; }
+
+  const ok = window.confirm(
+    "This checks whether your voice can be recorded, before you spend a full render.\n\n" +
+    "In the box that appears:\n" +
+    "  1. Choose THIS TAB\n" +
+    "  2. Tick “Also share tab audio”\n" +
+    "  3. Press Share\n\n" +
+    "If the test comes back silent, I'll tell you what to try instead."
+  );
+  if (!ok) return;
+
+  startAiClock(btn, "Testing");
+  let ds = null, meter = null;
+  try {
+    ds = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true, preferCurrentTab: true });
+    ds.getVideoTracks().forEach(t => t.stop());
+    if (!ds.getAudioTracks().length) {
+      throw new Error("No sound was shared at all — the “Also share tab audio” box wasn’t ticked.");
+    }
+    meter = makeLevelMeter(ds);
+    if (!meter) throw new Error("Couldn't listen to the shared sound on this browser.");
+
+    // speak something while we listen
+    const u = new SpeechSynthesisUtterance("Testing the voice recording, one two three.");
+    u.voice = voices[+$("voice").value];
+    u.rate = S.rate;
+    TTS.cancel();
+    TTS.speak(u);
+
+    const t0 = performance.now();
+    while (performance.now() - t0 < 4200) {
+      meter.sample();
+      await new Promise(r => setTimeout(r, 60));
+    }
+    TTS.cancel();
+
+    const peak = meter.peak();
+    if (peak >= AUDIBLE) {
+      say(`Sound captured — level ${(peak * 100).toFixed(0)}%. Your voice WILL be in the video. ` +
+          `Share the same way when you record.`, "ok");
+    } else {
+      say(`No sound came through (level ${(peak * 100).toFixed(1)}%). This browser is playing the voice ` +
+          `outside the tab, so “tab audio” can't hear it. Try again and choose ` +
+          `“Entire Screen” with “Also share system audio” instead — that captures it.`, "warn");
+    }
+  } catch (e) {
+    const why = String((e && e.message) || e);
+    say(/Permission|denied|NotAllowed/i.test(why)
+        ? "Sharing was cancelled, so nothing could be tested."
+        : why, "warn");
+  } finally {
+    if (meter) meter.close();
+    if (ds) ds.getTracks().forEach(t => t.stop());
+    stopAiClock(btn);
+  }
+}
+if ($("btnTestSound")) $("btnTestSound").addEventListener("click", testVoiceCapture);
 
 /* ============================================================
    The end card: one second that asks for the follow.
