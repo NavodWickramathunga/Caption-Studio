@@ -488,10 +488,34 @@ function speakScript(recordTimings) {
   // The video starts when the voice does, so the clock and the speech
   // share an origin on every run — timing and playback stay consistent.
   u.onstart = () => {
-    video.play().catch(() => {});
+    // The voice has started, so this instant is time zero for both.
+    speakRun.t0 = performance.now();
+    video.play().then(
+      () => { speakRun.videoPlaying = true; },
+      err => {
+        // Playback refused. Timing must not silently fall back to a frozen
+        // clock - that produced files with every word stamped at the same
+        // moment. The voice's own elapsed time is used instead.
+        speakRun.videoPlaying = false;
+        speakRun.playError = String((err && err.message) || err);
+      }
+    );
     setVoStatus(recordTimings ? "Listening and timing the words…" : "Playing…");
     $("voStatus").classList.add("speaking");
   };
+
+  /* Where are we, in seconds from the moment the voice began?
+     The video's clock is preferred while it is genuinely running and agrees;
+     otherwise the voice's own elapsed time carries the run. */
+  function runClock() {
+    const wall = speakRun && speakRun.t0 ? (performance.now() - speakRun.t0) / 1000 : 0;
+    const vt = video.currentTime;
+    const videoUsable = speakRun && speakRun.videoPlaying &&
+                        !video.paused && !video.ended && Math.abs(vt - wall) < 0.6;
+    if (videoUsable) return vt;
+    speakRun.usedWallClock = true;
+    return wall;
+  }
 
   u.onboundary = e => {
     if (e.name && e.name !== "word") return;
@@ -500,12 +524,13 @@ function speakScript(recordTimings) {
     const i = wordIndexAtChar(e.charIndex);
     if (i < 0 || i <= speakRun.lastIdx) return;
     speakRun.lastIdx = i;
-    setStartAt(i, video.currentTime);
+    setStartAt(i, runClock());
     renderChips();
   };
 
   u.onend = () => {
-    const spoken = video.currentTime;
+    const wall = speakRun && speakRun.t0 ? (performance.now() - speakRun.t0) / 1000 : 0;
+    const spoken = (speakRun && speakRun.usedWallClock) ? wall : (video.currentTime || wall);
     video.pause();
     video.muted = false;
     $("voStatus").classList.remove("speaking");
@@ -517,15 +542,35 @@ function speakScript(recordTimings) {
         setVoStatus("This voice doesn't report word boundaries, so it can't self-time. " +
                     "Try a “Microsoft …” voice, or tap the words in yourself in step 4.", "warn");
         renderChips();
+        speakRun = null; syncTransport();
         return;
       }
+
+      /* A run only counts if the words are actually spread out. A clock that
+         never moved produces every word at the same instant, which is how a
+         file full of 0.02s captions got made. Refuse it rather than export it. */
+      const marked = S.words.filter(w => w.start !== null);
+      const spread = marked.length > 1 ? marked[marked.length - 1].start - marked[0].start : 0;
+      if (spread < Math.min(1.0, spoken * 0.3)) {
+        S.words.forEach(w => { w.start = null; w.end = null; });
+        renderChips();
+        setVoStatus("That run didn't record properly — every word landed at the same moment, " +
+                    "so the timings were thrown away. Press Play first to check the video runs, " +
+                    "then try again. Or use “⏱ Time it for me” in step 4.", "warn");
+        speakRun = null; syncTransport();
+        return;
+      }
+
       const filled = normalizeTimings(spoken);
       S.spokenDur = spoken;
       renderChips();
       let msg = "Timed " + S.words.length + " words from the voiceover";
       if (filled) msg += " (" + filled + " estimated between boundaries)";
       msg += ". Voiceover " + spoken.toFixed(1) + "s · video " + totalTime().toFixed(1) + "s.";
-      setVoStatus(msg, "ok");
+      if (speakRun.usedWallClock) {
+        msg += " (the video wouldn't play, so timings came from the voice itself — press Play to check they line up)";
+      }
+      setVoStatus(msg, speakRun.usedWallClock ? "warn" : "ok");
       offerFit(spoken);
     } else {
       setVoStatus("");
@@ -1140,7 +1185,22 @@ async function burnIn() {
   if (speaking) {
     // A spoken voice has no media element behind it, so there is nothing to
     // captureStream() from. The only way to record it is to capture this tab's
-    // own audio — which Chrome will ask you to allow.
+    // own audio — which the browser will ask you to allow. Say what to tick
+    // before the box appears, because getting it wrong costs a whole render.
+    const ok = window.confirm(
+      "To put the voice inside the video, the browser needs to record this tab's sound.\n\n" +
+      "In the box that appears next:\n" +
+      "  1. Choose THIS TAB\n" +
+      "  2. Tick “Also share tab audio”  ← without this the video is silent\n" +
+      "  3. Press Share\n\n" +
+      "Press OK to continue, or Cancel to stop."
+    );
+    if (!ok) {
+      S.recording = false;
+      say("Recording cancelled.", "warn");
+      refreshExports();
+      return;
+    }
     try {
       tabStream = await navigator.mediaDevices.getDisplayMedia({
         video: true, audio: true, preferCurrentTab: true
@@ -1179,6 +1239,7 @@ async function burnIn() {
   await new Promise(r => setTimeout(r, 200));
 
   rec.onstop = () => {
+    const hadAudio = stream.getAudioTracks().length > 0;
     stream.getTracks().forEach(t => { if (t.kind === "video") t.stop(); });
     if (tabStream) tabStream.getTracks().forEach(t => t.stop());
     if (speaking) stopSpeaking();
@@ -1186,7 +1247,19 @@ async function burnIn() {
     pauseAll();
     video.muted = (S.voMode === "file" && S.hasAudio);
     download(baseName() + "-captioned.webm", new Blob(chunks, { type: mime }));
-    say("Saved " + baseName() + "-captioned.webm", "ok");
+
+    /* Facebook and YouTube need the voice inside the file - a silent export
+       is a wasted render, so say so plainly rather than letting it be
+       discovered after upload. */
+    if (hadAudio) {
+      say("Saved " + baseName() + "-captioned.webm — with sound.", "ok");
+    } else {
+      say("Saved " + baseName() + "-captioned.webm — but it has NO SOUND. " +
+          (speaking
+            ? "A voice spoken by the browser can only be recorded if you tick “Also share tab audio” in the sharing box. " +
+              "Easier: make the voiceover as a file, load it under “Load a file”, and record again."
+            : "The voiceover track couldn't be captured. Try loading the voiceover under “Load a file”."), "warn");
+    }
     refreshExports();
   };
 
