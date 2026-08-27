@@ -1607,7 +1607,11 @@ syncTransport();
 window.__cs = { S, buildASS, buildSRT, buildJSON, markWord, undoMark, resyncFrom, clearAll,
                 activeIndexAt, drawCaptions, parseScript, cursorIndex, allTimed, assColor,
                 wordIndexAtChar, setStartAt, normalizeTimings, speakScript, stopSpeaking,
-                setMode, loadVoices, CAN_SPEAK, get voices() { return voices; } };
+                setMode, loadVoices, CAN_SPEAK, get voices() { return voices; },
+                // clip timeline
+                clipAt, totalClipDuration, recomputeClipStarts, renderClipList, outputSize,
+                seekAll, nowTime, totalTime, moveClip, removeClip,
+                get activeClip() { return activeClip; }, set activeClip(v) { activeClip = v; } };
 
 
 /* ============================================================
