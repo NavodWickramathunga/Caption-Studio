@@ -221,11 +221,82 @@ $("videoFile").addEventListener("change", e => {
   e.target.value = "";     // so the same file can be added again
 });
 
+/* ============================================================
+   Dropping clips in.
+
+   The drop zone and the preview frame both accept them. Files arrive in
+   the order they were selected, which is the order they will play, and
+   dropping again adds to what is already there rather than replacing it.
+   ============================================================ */
+function videoFilesFrom(dt) {
+  const out = [];
+  if (!dt) return out;
+  // items[] carries the kind; files[] is the fallback for older paths
+  if (dt.files && dt.files.length) {
+    Array.from(dt.files).forEach(f => {
+      const ext = f.name.includes(".") ? f.name.toLowerCase().split(".").pop() : "";
+      const looksVideo = /^video\//.test(f.type) ||
+                         ["mp4","mov","webm","m4v","avi","mkv","mpg","mpeg"].includes(ext);
+      if (looksVideo) out.push(f);
+    });
+  }
+  return out;
+}
+
+function wireDropTarget(el, activeClass) {
+  if (!el) return;
+  let depth = 0;   // dragenter/leave fire for children too, so count them
+  const on = () => el.classList.add(activeClass);
+  const off = () => el.classList.remove(activeClass);
+
+  el.addEventListener("dragenter", e => {
+    e.preventDefault(); depth++; on();
+  });
+  el.addEventListener("dragover", e => {
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+  });
+  el.addEventListener("dragleave", e => {
+    e.preventDefault(); depth = Math.max(0, depth - 1); if (!depth) off();
+  });
+  el.addEventListener("drop", e => {
+    e.preventDefault(); depth = 0; off();
+    const files = videoFilesFrom(e.dataTransfer);
+    if (!files.length) {
+      const any = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length;
+      $("videoName").textContent = any
+        ? "That isn't a video — drop an .mp4, .mov or .webm."
+        : "Nothing was dropped.";
+      $("videoName").classList.add("none");
+      return;
+    }
+    const before = S.clips.length;
+    loadClipFiles(files);
+    $("videoName").textContent = before
+      ? files.length + (files.length === 1 ? " clip added" : " clips added")
+      : (files.length === 1 ? files[0].name : files.length + " clips added");
+    $("videoName").classList.remove("none");
+    if ($("dropHint")) $("dropHint").textContent = "Drop more clips here";
+  });
+}
+
+wireDropTarget($("dropzone"), "over");
+wireDropTarget(document.querySelector(".frame"), "over");
+
+// a file dropped anywhere else shouldn't navigate away from the page
+["dragover", "drop"].forEach(evt => {
+  window.addEventListener(evt, e => {
+    const inZone = e.target.closest && (e.target.closest("#dropzone") || e.target.closest(".frame"));
+    if (!inZone) e.preventDefault();
+  });
+});
+
 if ($("clearClips")) {
   $("clearClips").addEventListener("click", () => {
     while (S.clips.length) removeClip(0);
     $("videoName").textContent = "nothing loaded";
     $("videoName").classList.add("none");
+    if ($("dropHint")) $("dropHint").textContent = "Drop clips here";
   });
 }
 

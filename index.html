@@ -52,12 +52,17 @@
 
     <section class="step">
       <h2><i>1</i>Choose your clips</h2>
-      <p class="hint">One clip, or several to be joined end to end. Pick more than one at once,
-        or add them a few at a time. Nothing leaves this machine.</p>
-      <div class="filerow">
-        <label class="filebtn">Add clips…<input type="file" id="videoFile" accept="video/*" multiple></label>
-        <span class="filename none" id="videoName">nothing loaded</span>
-        <button id="clearClips" class="ghost" style="font-size:12px">Clear all</button>
+      <p class="hint">One clip, or several to be joined end to end. Drop them in below, or pick
+        them from disk. Nothing leaves this machine.</p>
+      <div class="dropzone" id="dropzone">
+        <div class="dropzone-inner">
+          <span class="dropzone-hint" id="dropHint">Drop clips here</span>
+          <div class="filerow" style="justify-content:center">
+            <label class="filebtn">Add clips…<input type="file" id="videoFile" accept="video/*" multiple></label>
+            <button id="clearClips" class="ghost" style="font-size:12px">Clear all</button>
+          </div>
+          <span class="filename none" id="videoName">nothing loaded</span>
+        </div>
       </div>
       <div id="clipList" class="clip-list" style="display:none"></div>
     </section>

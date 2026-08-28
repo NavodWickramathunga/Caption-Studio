@@ -415,3 +415,21 @@ kbd{
 }
 .plat-note b{color:var(--ivory)}
 .plat-note.over{color:#e8cf94}
+
+/* ---------- drop zone ---------- */
+.dropzone{
+  border:1.5px dashed var(--line);border-radius:11px;padding:16px 14px;
+  transition:border-color .14s, background .14s;
+}
+.dropzone-inner{display:flex;flex-direction:column;align-items:center;gap:9px;text-align:center}
+.dropzone-hint{
+  font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--ivory-faint);
+}
+.dropzone.over{
+  border-color:var(--rose);border-style:solid;
+  background:rgba(221,95,119,.09);
+}
+.dropzone.over .dropzone-hint{color:var(--rose)}
+.frame.over{outline:3px solid var(--rose);outline-offset:-3px}
+@media (prefers-reduced-motion:reduce){.dropzone{transition:none}}
