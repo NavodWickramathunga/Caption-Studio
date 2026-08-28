@@ -2279,6 +2279,7 @@ window.__cs = { S, buildASS, buildSRT, buildJSON, markWord, undoMark, resyncFrom
                 checkClipSound, updateSoundSummary, gatherTimingAudio, decodeMono, shortReason,
                 withWebmDuration, captureClipAudio, clipAudio, opensCleanly, playableLength,
                 autoFit, FIT_TOLERANCE, exportMp4, CAN_MP4, pickH264, outputSize,
+                renderMp4, seekElement, gatherExportAudio,
                 seekAll, nowTime, totalTime, moveClip, removeClip,
                 get activeClip() { return activeClip; }, set activeClip(v) { activeClip = v; } };
 
