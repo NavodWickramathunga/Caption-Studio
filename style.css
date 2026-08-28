@@ -433,3 +433,8 @@ kbd{
 .dropzone.over .dropzone-hint{color:var(--rose)}
 .frame.over{outline:3px solid var(--rose);outline-offset:-3px}
 @media (prefers-reduced-motion:reduce){.dropzone{transition:none}}
+.clip-row{grid-template-columns:22px 1fr auto auto auto auto auto}
+.clip-snd{font-size:12px;line-height:1;opacity:.75}
+.clip-snd.ok{opacity:1}
+.clip-snd.bad{opacity:1;filter:saturate(1.4)}
+@media (max-width:520px){ .clip-row{grid-template-columns:22px 1fr auto} }

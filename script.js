@@ -104,6 +104,7 @@ function loadClipFiles(files) {
       recomputeClipStarts();
       renderClipList();
       syncTransport();
+      checkClipSound(clip);      // so a silent clip is obvious before anything is pressed
     });
     el.addEventListener("error", () => {
       clip.duration = 0;
@@ -163,6 +164,41 @@ function moveClip(i, dir) {
   syncTransport();
 }
 
+/* Does this clip actually carry a voice? Answered once, on load, so the
+   list can say so before any button is pressed. */
+async function checkClipSound(clip) {
+  clip.sound = "checking";
+  renderClipList();
+  try {
+    const pcm = await decodeMono(clip.file, 16000);
+    let peak = 0;
+    for (let i = 0; i < pcm.length; i += 5) { const v = Math.abs(pcm[i]); if (v > peak) peak = v; }
+    clip.peak = peak;
+    clip.sound = peak >= 0.005 ? "yes" : "silent";
+  } catch (e) {
+    clip.sound = "unreadable";
+  }
+  renderClipList();
+  updateSoundSummary();
+}
+
+function updateSoundSummary() {
+  const el = $("clipSound");
+  if (!el) return;
+  const done = S.clips.filter(c => c.sound && c.sound !== "checking");
+  if (!S.clips.length || done.length < S.clips.length) { el.style.display = "none"; return; }
+  const bad = done.filter(c => c.sound !== "yes");
+  if (!bad.length) { el.style.display = "none"; return; }
+  el.style.display = "";
+  const allBad = bad.length === done.length;
+  el.textContent = allBad
+    ? (bad[0].sound === "unreadable"
+        ? "No sound could be read from these clips — this browser may not decode their audio. Timing from the voice won't work; use “Make one here” or “Load a file” in step 2."
+        : "These clips have no sound in them. Timing from the voice won't work — add a voiceover in step 2.")
+    : bad.length + " of your clips have no usable sound: " + bad.map(c => c.name).join(", ") +
+      ". Those stretches will be treated as silence.";
+}
+
 function renderClipList() {
   const box = $("clipList");
   if (!box) return;
@@ -186,6 +222,13 @@ function renderClipList() {
     dur.className = "clip-dur";
     dur.textContent = c.duration ? c.duration.toFixed(1) + "s" : "…";
 
+    const snd = document.createElement("span");
+    snd.className = "clip-snd";
+    if (c.sound === "yes")             { snd.textContent = "🔊"; snd.title = "Has a voice in it"; snd.classList.add("ok"); }
+    else if (c.sound === "silent")     { snd.textContent = "🔇"; snd.title = "No sound in this clip"; snd.classList.add("bad"); }
+    else if (c.sound === "unreadable") { snd.textContent = "⚠"; snd.title = "The sound couldn't be read from this clip"; snd.classList.add("bad"); }
+    else                               { snd.textContent = "·";  snd.title = "Checking for sound…"; }
+
     const up = document.createElement("button");
     up.textContent = "↑"; up.title = "Move earlier"; up.disabled = i === 0;
     up.addEventListener("click", () => moveClip(i, -1));
@@ -198,7 +241,7 @@ function renderClipList() {
     del.textContent = "✕"; del.title = "Remove this clip";
     del.addEventListener("click", () => removeClip(i));
 
-    row.append(num, name, dur, up, down, del);
+    row.append(num, name, snd, dur, up, down, del);
     box.appendChild(row);
   });
 
@@ -2288,9 +2331,27 @@ async function gatherTimingAudio() {
   }
   if (S.clips.length) {
     const parts = [];
+    const failed = [];
     for (const c of S.clips) {
-      try { parts.push(await decodeMono(c.file, SR)); }
-      catch (e) { parts.push(new Float32Array(Math.ceil((c.duration || 0) * SR))); }
+      try {
+        parts.push(await decodeMono(c.file, SR));
+      } catch (e) {
+        // A clip that cannot be decoded is NOT a silent clip. Substituting
+        // silence here made a broken read look like a quiet video.
+        failed.push(c.name);
+        parts.push(new Float32Array(Math.ceil((c.duration || 0) * SR)));
+      }
+    }
+    if (failed.length === S.clips.length) {
+      throw new Error(
+        failed.length === 1
+          ? `Couldn't read the sound out of “${failed[0]}”. The clip may have no audio track, ` +
+            `or be in a format this browser won't decode. Try it in step 2 under “Load a file”, ` +
+            `or check the clip plays with sound.`
+          : `Couldn't read the sound out of any of the ${failed.length} clips.`);
+    }
+    if (failed.length) {
+      say(`Note: no sound could be read from ${failed.join(", ")} — those parts are treated as silent.`, "warn");
     }
     const total = parts.reduce((a, p) => a + p.length, 0);
     const pcm = new Float32Array(total);
