@@ -26,9 +26,22 @@
         <span>Start with step 1 — choose the clip you want to caption.</span>
       </div>
     </div>
+    <div class="scrub-wrap">
+      <div class="scrub" id="scrub" role="slider" tabindex="0"
+           aria-label="Video position" aria-valuemin="0" aria-valuenow="0">
+        <div class="scrub-track"></div>
+        <div class="scrub-said" id="scrubSaid"></div>
+        <div class="scrub-fill" id="scrubFill"></div>
+        <div class="scrub-joins" id="scrubJoins"></div>
+        <div class="scrub-head" id="scrubHead"></div>
+      </div>
+      <div class="scrub-word" id="scrubWord"></div>
+    </div>
     <div class="transport">
       <button id="playBtn" disabled>Play</button>
       <button id="restartBtn" class="ghost" disabled>Back to start</button>
+      <button id="backBtn" class="ghost" disabled title="Back one second">−1s</button>
+      <button id="fwdBtn" class="ghost" disabled title="Forward one second">+1s</button>
       <div class="clock"><b id="tNow">0:00.00</b> / <span id="tEnd">0:00.00</span></div>
     </div>
     <audio id="audio" style="display:none"></audio>
@@ -214,6 +227,15 @@
     <h2><i>5</i>Save your work</h2>
   </div>
   <div style="padding:0 18px 4px; display:flex; flex-direction:column; gap:12px;">
+
+    <div class="plat">
+      <span class="plat-label">Posting to</span>
+      <button id="platFacebook" aria-pressed="true">Facebook</button>
+      <button id="platYoutube"  aria-pressed="false">YouTube Shorts</button>
+      <button id="platTiktok"   aria-pressed="false">TikTok</button>
+      <p class="plat-note" id="platNote"></p>
+    </div>
+
 
     <div style="display:flex; gap:16px; flex-wrap:wrap; align-items:center;">
       <label class="chk"><input type="checkbox" id="showSafe"> Show where Facebook's buttons cover the frame</label>

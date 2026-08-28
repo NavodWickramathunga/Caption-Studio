@@ -381,3 +381,37 @@ kbd{
   .clip-row{grid-template-columns:22px 1fr auto;grid-auto-rows:auto}
   .clip-row button{grid-row:2}
 }
+
+/* ---------- scrubber ---------- */
+.scrub-wrap{max-width:420px;margin:10px auto 0;width:100%;display:flex;flex-direction:column;gap:5px}
+.scrub{position:relative;height:26px;cursor:pointer;touch-action:none;display:flex;align-items:center}
+.scrub:focus-visible{outline:2px solid var(--vein);outline-offset:3px;border-radius:6px}
+.scrub-track{position:absolute;left:0;right:0;height:6px;border-radius:3px;background:var(--panel-2);border:1px solid var(--line)}
+.scrub-said{position:absolute;left:0;right:0;height:6px;border-radius:3px;overflow:hidden;pointer-events:none}
+.scrub-said i{position:absolute;top:0;bottom:0;background:rgba(127,201,164,.38)}
+.scrub-fill{position:absolute;left:0;height:6px;border-radius:3px;background:var(--rose);width:0;pointer-events:none}
+.scrub-joins{position:absolute;left:0;right:0;height:14px;pointer-events:none}
+.scrub-joins i{position:absolute;top:0;width:2px;height:14px;background:var(--vein);opacity:.85;transform:translateX(-1px)}
+.scrub-head{
+  position:absolute;width:14px;height:14px;border-radius:50%;background:var(--ivory);
+  border:2px solid var(--rose);transform:translateX(-7px);pointer-events:none;
+  box-shadow:0 1px 6px rgba(0,0,0,.6);
+}
+.scrub-word{
+  font-family:var(--mono);font-size:11px;color:var(--ivory-dim);min-height:15px;text-align:center;
+}
+.scrub-word b{color:var(--caption-yellow);font-weight:600}
+
+/* ---------- platform picker ---------- */
+.plat{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px}
+.plat-label{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--ivory-dim)}
+.plat button{
+  font-size:12.5px;padding:6px 12px;border-radius:999px;
+  background:var(--panel-2);border:1px solid var(--line);color:var(--ivory-dim);cursor:pointer;
+}
+.plat button[aria-pressed="true"]{background:var(--vein-deep);border-color:var(--vein);color:#dbe9fb}
+.plat-note{
+  font-size:12px;color:var(--ivory-dim);width:100%;margin-top:2px;line-height:1.5;
+}
+.plat-note b{color:var(--ivory)}
+.plat-note.over{color:#e8cf94}

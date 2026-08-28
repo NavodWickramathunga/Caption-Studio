@@ -342,6 +342,107 @@ function togglePlay() { (master().paused) ? playAll() : pauseAll(); }
 
 $("playBtn").addEventListener("click", togglePlay);
 $("restartBtn").addEventListener("click", () => seekAll(0));
+if ($("backBtn")) $("backBtn").addEventListener("click", () => seekAll(nowTime() - 1));
+if ($("fwdBtn"))  $("fwdBtn").addEventListener("click",  () => seekAll(nowTime() + 1));
+
+/* ============================================================
+   The scrubber.
+
+   Drag anywhere on the timeline to review a moment. Because seeking goes
+   through seekAll, dragging works across joined clips as one strip. The
+   bar also shows where the clips meet and where the talking is, so a
+   silent gap or a bad join can be found by eye.
+   ============================================================ */
+let scrubbing = false;
+
+function scrubFraction(ev) {
+  const el = $("scrub");
+  const r = el.getBoundingClientRect();
+  const x = (ev.clientX !== undefined ? ev.clientX : 0) - r.left;
+  return Math.max(0, Math.min(1, r.width ? x / r.width : 0));
+}
+
+function scrubTo(ev) {
+  const dur = totalTime();
+  if (!dur) return;
+  seekAll(scrubFraction(ev) * dur);
+  paintScrub();
+}
+
+if ($("scrub")) {
+  const el = $("scrub");
+  el.addEventListener("pointerdown", e => {
+    if (!totalTime()) return;
+    scrubbing = true;
+    el.setPointerCapture(e.pointerId);
+    scrubTo(e);
+  });
+  el.addEventListener("pointermove", e => { if (scrubbing) scrubTo(e); });
+  const stop = e => {
+    if (!scrubbing) return;
+    scrubbing = false;
+    try { el.releasePointerCapture(e.pointerId); } catch (err) {}
+  };
+  el.addEventListener("pointerup", stop);
+  el.addEventListener("pointercancel", stop);
+  el.addEventListener("keydown", e => {
+    const step = e.shiftKey ? 5 : (e.key === "ArrowLeft" || e.key === "ArrowRight" ? 0.25 : 1);
+    if (e.key === "ArrowLeft")  { e.preventDefault(); seekAll(nowTime() - step); }
+    if (e.key === "ArrowRight") { e.preventDefault(); seekAll(nowTime() + step); }
+    if (e.key === "Home")       { e.preventDefault(); seekAll(0); }
+    if (e.key === "End")        { e.preventDefault(); seekAll(totalTime() - 0.05); }
+  });
+}
+
+/* Where the clips meet, drawn once per change rather than every frame. */
+function paintScrubMarks() {
+  const joins = $("scrubJoins"), said = $("scrubSaid");
+  if (!joins || !said) return;
+  const dur = totalTime();
+  joins.replaceChildren();
+  said.replaceChildren();
+  if (!dur) return;
+
+  // clip boundaries
+  S.clips.slice(1).forEach(c => {
+    const i = document.createElement("i");
+    i.style.left = (c.start / dur * 100) + "%";
+    i.title = "Clip starts here";
+    joins.appendChild(i);
+  });
+
+  // where words actually are, so silence shows as a gap
+  S.words.forEach(w => {
+    if (w.start === null || w.end === null) return;
+    const i = document.createElement("i");
+    i.style.left = (w.start / dur * 100) + "%";
+    i.style.width = Math.max(0.4, (w.end - w.start) / dur * 100) + "%";
+    said.appendChild(i);
+  });
+}
+
+function paintScrub() {
+  const dur = totalTime();
+  const t = nowTime();
+  const pct = dur ? Math.max(0, Math.min(100, t / dur * 100)) : 0;
+  const fill = $("scrubFill"), head = $("scrubHead"), scrub = $("scrub");
+  if (fill) fill.style.width = pct + "%";
+  if (head) head.style.left = pct + "%";
+  if (scrub) {
+    scrub.setAttribute("aria-valuemax", dur.toFixed(1));
+    scrub.setAttribute("aria-valuenow", t.toFixed(1));
+    scrub.setAttribute("aria-valuetext", fmtClock(t) + " of " + fmtClock(dur));
+  }
+  const lbl = $("scrubWord");
+  if (lbl) {
+    const idx = activeIndexAt(t);
+    const clip = S.clips.length > 1 ? clipAt(t) : null;
+    const where = clip ? "clip " + (clip.i + 1) + " · " : "";
+    lbl.innerHTML = idx >= 0
+      ? where + "<b>" + S.words[idx].text + "</b>"
+      : (dur ? where + "—" : "");
+  }
+}
 
 /* The output size is fixed by the FIRST clip. Later clips of a different
    size are fitted into it, so the frame never changes shape part-way through. */
@@ -412,6 +513,10 @@ function syncTransport() {
   const ready = !!video.src;
   $("playBtn").disabled = !ready;
   $("restartBtn").disabled = !ready;
+  if ($("backBtn")) $("backBtn").disabled = !ready;
+  if ($("fwdBtn"))  $("fwdBtn").disabled  = !ready;
+  paintScrubMarks();
+  updatePlatformNote();
   $("playBtn").textContent = (ready && !master().paused) ? "Pause" : "Play";
   $("tEnd").textContent = fmtClock(totalTime());
 }
@@ -1035,6 +1140,7 @@ function renderChips() {
   const marked = S.words.filter(w => w.start !== null).length + (closed ? 1 : 0);
   $("tapProgress").style.width = Math.round(marked / (S.words.length + 1) * 100) + "%";
 
+  paintScrubMarks();
   const active = chipsEl.querySelector(".now");
   if (active) active.scrollIntoView({ block: "nearest", inline: "center" });
   refreshExports();
@@ -1193,7 +1299,49 @@ function drawCaptions(ctx, W, H, t) {
    whole clip - so show where not to put it, and say so if you have.
    Guides are preview-only; they are never drawn into an export.
    ============================================================ */
-const SAFE = { top: 0.08, bottom: 0.20, right: 0.15 };   // fractions of the frame
+/* ============================================================
+   Each platform covers a different part of the frame with its own
+   interface and accepts caption files on different terms. These are
+   working approximations from the current apps - the exact overlay shifts
+   with device and app version, so treat the shading as "keep clear of
+   this", not a pixel guarantee.
+   ============================================================ */
+const PLATFORMS = {
+  facebook: {
+    label: "Facebook",
+    safe: { top: 0.08, bottom: 0.20, right: 0.15 },
+    maxSeconds: 90,
+    captionExt: ".en_US.srt",
+    captionNote: "Facebook takes only .srt, and only when the name ends .en_US.srt.",
+    lengthNote: "Reels run up to 90 seconds."
+  },
+  youtube: {
+    label: "YouTube Shorts",
+    safe: { top: 0.06, bottom: 0.16, right: 0.12 },
+    maxSeconds: 180,
+    captionExt: ".srt",
+    captionNote: "YouTube takes .srt with any filename. Upload it on the video's subtitles page.",
+    lengthNote: "Shorts run up to 3 minutes; anything longer becomes a normal video."
+  },
+  tiktok: {
+    label: "TikTok",
+    safe: { top: 0.10, bottom: 0.26, right: 0.16 },
+    maxSeconds: 600,
+    captionExt: ".srt",
+    captionNote: "TikTok takes .srt on upload, under “Show more”.",
+    lengthNote: "TikTok allows up to 10 minutes, but short still holds attention best."
+  }
+};
+
+let platform = "facebook";
+try { platform = localStorage.getItem("captionStudio.platform") || "facebook"; } catch (e) {}
+if (!PLATFORMS[platform]) platform = "facebook";
+
+const plat = () => PLATFORMS[platform];
+Object.defineProperty(window, "SAFE_DEBUG", { get: () => plat().safe, configurable: true });
+
+/* Kept as a name because the drawing code reads it every frame. */
+let SAFE = plat().safe;
 
 function drawSafeZones(ctx, W, H) {
   ctx.save();
@@ -1213,7 +1361,7 @@ function drawSafeZones(ctx, W, H) {
   ctx.fillStyle = "rgba(255,255,255,0.75)";
   ctx.font = Math.round(H * 0.016) + "px system-ui, sans-serif";
   ctx.textAlign = "left";
-  ctx.fillText("Facebook buttons sit here", W * 0.02, H * (1 - SAFE.bottom) + H * 0.03);
+  ctx.fillText(plat().label + " buttons sit here", W * 0.02, H * (1 - SAFE.bottom) + H * 0.03);
   ctx.restore();
 }
 
@@ -1229,12 +1377,12 @@ function safeZoneVerdict(H) {
   const topLine = H * SAFE.top, bottomLine = H * (1 - SAFE.bottom);
   if (band.bottom > bottomLine) {
     const over = Math.round(((band.bottom - bottomLine) / H) * 100);
-    return { ok: false, msg: `Captions run ${over}% into Facebook's button area — raise “Height on frame” until this clears.` };
+    return { ok: false, msg: `Captions run ${over}% into ${plat().label}'s button area — raise “Height on frame” until this clears.` };
   }
   if (band.top < topLine) {
-    return { ok: false, msg: "Captions run into the top bar — lower “Height on frame”." };
+    return { ok: false, msg: `Captions run into ${plat().label}'s top bar — lower “Height on frame”.` };
   }
-  return { ok: true, msg: "Captions clear Facebook's interface." };
+  return { ok: true, msg: `Captions clear ${plat().label}'s interface.` };
 }
 
 function updateSafeZoneWarning() {
@@ -1260,6 +1408,7 @@ function frameLoop() {
     }
     drawCaptions(octx, W, H, nowTime());
     $("tNow").textContent = fmtClock(nowTime());
+    if (!scrubbing) paintScrub();
   }
   requestAnimationFrame(frameLoop);
 }
@@ -1395,18 +1544,57 @@ bindExportBtn("expAss", "btnExportAss", () => { download(baseName() + ".ass", bu
 bindExportBtn("expSrt", "btnExportSrt", () => { download(baseName() + ".srt", buildSRT()); say("Saved " + baseName() + ".srt", "ok"); });
 bindExportBtn("expJson", "btnExportJson", () => { download(baseName() + ".json", buildJSON(), "application/json"); say("Saved " + baseName() + ".json", "ok"); });
 
-/* Facebook rejects a caption file unless the name ends in .<lang>_<COUNTRY>.srt -
-   lower-case language, upper-case country. Same subtitles, fussy filename. */
-const FB_LOCALE = "en_US";
-function facebookSrtName() {
-  // strip anything that already looks like a locale suffix so it can't double up
+/* Facebook rejects a caption file unless the name ends .<lang>_<COUNTRY>.srt.
+   The others are relaxed about it, so the name follows whichever platform
+   is selected rather than always assuming Facebook. */
+function platformSrtName() {
   const base = baseName().replace(/\.[a-z]{2}_[A-Z]{2}$/, "");
-  return base + "." + FB_LOCALE + ".srt";
+  return base + plat().captionExt;
 }
 bindExportBtn("expFbSrt", "btnExportFbSrt", () => {
-  const name = facebookSrtName();
+  const name = platformSrtName();
   download(name, buildSRT());
-  say("Saved " + name + " — upload your video to Facebook first, then add this file to the same post.", "ok");
+  say("Saved " + name + " — " + plat().captionNote, "ok");
+});
+
+/* ---------- platform picker ---------- */
+function applyPlatform(key) {
+  if (!PLATFORMS[key]) return;
+  platform = key;
+  SAFE = plat().safe;
+  try { localStorage.setItem("captionStudio.platform", key); } catch (e) {}
+
+  Object.keys(PLATFORMS).forEach(k => {
+    const btn = $("plat" + k.charAt(0).toUpperCase() + k.slice(1));
+    if (btn) btn.setAttribute("aria-pressed", k === key ? "true" : "false");
+  });
+
+  const btn = $("btnExportFbSrt");
+  if (btn) {
+    btn.childNodes[0].nodeValue = "Save captions for " + plat().label;
+    const small = btn.querySelector("small");
+    if (small) small.textContent = plat().captionExt.replace(/^\./, "") + " · named the way it wants";
+  }
+  updatePlatformNote();
+  updateSafeZoneWarning();
+}
+
+function updatePlatformNote() {
+  const el = $("platNote");
+  if (!el) return;
+  const p = plat();
+  const dur = totalTime();
+  const over = dur > p.maxSeconds;
+  el.className = "plat-note" + (over ? " over" : "");
+  el.innerHTML = over
+    ? `<b>Too long for ${p.label}.</b> Your video is ${dur.toFixed(0)}s and the limit is ${p.maxSeconds}s — trim it or remove a clip.`
+    : `<b>${p.label}:</b> ${p.captionNote} ${p.lengthNote}` +
+      (dur ? ` Yours is ${dur.toFixed(0)}s.` : "");
+}
+
+["facebook", "youtube", "tiktok"].forEach(k => {
+  const btn = $("plat" + k.charAt(0).toUpperCase() + k.slice(1));
+  if (btn) btn.addEventListener("click", () => applyPlatform(k));
 });
 
 function say(msg, kind) {
@@ -1614,6 +1802,7 @@ if (document.fonts && document.fonts.load) {
   document.fonts.load('400 100px Anton', 'AA').catch(() => {});
 }
 parseScript();
+applyPlatform(platform);
 setMode("own");   // most clips arrive with their voice already in them
 syncTransport();
 
