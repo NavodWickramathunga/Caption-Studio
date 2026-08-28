@@ -913,6 +913,22 @@ function setMode(mode) {
   // Only mute the clip when something else is providing the voice.
   video.muted = (mode === "file" && S.hasAudio);
   S.clips.forEach(c => { c.el.muted = video.muted; });
+
+  // Say which voice the timing button will listen to, so the two paths
+  // read as one choice rather than two competing buttons.
+  const t = $("btnAutoTime");
+  if (t) {
+    const label = mode === "generated" ? "⏱ Speak it and time it"
+                : mode === "file"      ? "⏱ Time it from your file"
+                :                        "⏱ Time it for me";
+    t.textContent = label;
+    t.dataset.origLabel = label;
+    t.title = mode === "generated"
+      ? "Reads your script aloud with the voice from step 2 and times it as it goes"
+      : mode === "file"
+      ? "Listens to the voiceover file you loaded and times the words to it"
+      : "Listens to the sound already in your clips and times the words to it";
+  }
   syncTransport();
 }
 if ($("modeOwn"))  $("modeOwn").addEventListener("click",  () => setMode("own"));
@@ -2553,11 +2569,16 @@ async function gatherTimingAudio() {
       }
     }
     if (failed.length === S.clips.length) {
-      throw new Error(
-        failed.length === 1
-          ? `“${failed[0]}” has no sound in it — the file was read and played through, and both were silent. ` +
-            `Veo does not always include audio. Add a voice in step 2 with “Make one here”, or “Load a file”.`
-          : `None of the ${failed.length} clips have any sound in them. Add a voice in step 2.`);
+      const what = failed.length === 1
+        ? `“${failed[0]}” has no sound in it`
+        : `None of the ${failed.length} clips have any sound in them`;
+      // Point at whatever is actually available, rather than a generic list.
+      const voiceReady = CAN_SPEAK && $("voice") && $("voice").value !== "";
+      const how = voiceReady
+        ? `You already have a voice picked in step 2 — switch step 2 to “Make one here” and press ` +
+          `“Speak it and time the words”. That reads your script aloud and times it as it goes.`
+        : `Add a voice in step 2: “Make one here” speaks your script, or “Load a file” uses a recording.`;
+      throw new Error(`${what} — the file was read and played through, and both were silent. ${how}`);
     }
     if (failed.length) {
       say(`No sound in ${failed.join(", ")} — those stretches are treated as silence.`, "warn");
@@ -2618,6 +2639,16 @@ if ($("btnAutoTime")) {
     const btn = $("btnAutoTime");
     if (!haveTimingSource()) { say("Add your clips in step 1 first.", "warn"); return; }
     if (!S.words.length) { say("Paste your script in step 3 first.", "warn"); return; }
+
+    /* Timing means listening to a voice. Which voice depends on what step 2
+       is set to, so send this to the right place rather than always reading
+       the clips - a clip with no sound is not a failure when the voice is
+       being spoken here. */
+    if (S.voMode === "generated" && CAN_SPEAK && $("voice").value !== "") {
+      say("Using the voice from step 2 — speaking it now and timing as it goes.");
+      speakScript(true);
+      return;
+    }
 
     startAiClock(btn, "Listening");
     try {
