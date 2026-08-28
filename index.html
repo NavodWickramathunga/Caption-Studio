@@ -157,7 +157,7 @@
       <div style="display:flex; gap:8px; margin-top:10px; flex-wrap:wrap;">
         <button id="btnRewrite" class="ghost" style="border:1px solid var(--vein); color:var(--vein); font-size:11px; padding:4px 8px; border-radius:6px; cursor:pointer;">✨ Rewrite (Punchy)</button>
         <button id="btnEmojify" class="ghost" style="border:1px solid var(--vein); color:var(--vein); font-size:11px; padding:4px 8px; border-radius:6px; cursor:pointer;">😊 Add Emojis</button>
-        <button id="btnTranscribe" class="ghost" style="border:1px solid var(--vein); color:var(--vein); font-size:11px; padding:4px 8px; border-radius:6px; cursor:pointer;">🎙️ Auto-Transcribe</button>
+        <button id="btnTranscribe" title="Tries Gemini first; falls back to writing the captions here" class="ghost" style="border:1px solid var(--vein); color:var(--vein); font-size:11px; padding:4px 8px; border-radius:6px; cursor:pointer;">🎙️ Auto-Transcribe</button>
       </div>
 
       <div class="status" id="exportStatus" role="status" aria-live="polite"></div>
@@ -171,7 +171,7 @@
   <div class="tapbar">
     <h2><i>4</i>Check the timings</h2>
     <button id="btnAutoTime" class="primary" style="font-size:11px; padding:5px 10px; margin-left:10px; border-radius:6px; cursor:pointer;" title="Listens to the audio on this machine and times every word. No key, no internet.">⏱ Time it for me</button>
-    <button id="btnAiSync" class="ghost" style="border:1px solid var(--vein); color:var(--vein); font-size:11px; padding:4px 8px; margin-left:6px; border-radius:6px; cursor:pointer;" title="Uses Gemini to automatically sync words to the loaded video">✨ Auto-Sync</button>
+    <button id="btnAiSync" class="ghost" style="border:1px solid var(--vein); color:var(--vein); font-size:11px; padding:4px 8px; margin-left:6px; border-radius:6px; cursor:pointer;" title="Tries Gemini first; if it is unavailable it times the words here instead">✨ Auto-Sync</button>
     <div class="keys">
       <span><kbd>Space</kbd> mark this word</span>
       <span><kbd>Backspace</kbd> undo one</span>

@@ -2503,6 +2503,18 @@ async function transcribeFromVoice() {
 }
 if ($("btnTranscribeLocal")) $("btnTranscribeLocal").addEventListener("click", transcribeFromVoice);
 
+/* Turn a Gemini failure into a few plain words, for a message that is
+   mostly about what happened next. */
+function shortReason(e) {
+  const m = String((e && e.message) || e);
+  if (/rate limit|quota|429/i.test(m))       return "Google's free limit was reached";
+  if (/API key|rejected|400/i.test(m))       return "The API key wasn't accepted";
+  if (/didn't answer|timed out|90s/i.test(m)) return "Google didn't answer in time";
+  if (/reach Google|Failed to fetch|network/i.test(m)) return "Google couldn't be reached";
+  if (/no longer available|model/i.test(m))  return "That Gemini model wasn't available";
+  return "Gemini wasn't available";
+}
+
 /* ---- the coaching panel: what would cost you views ---- */
 function showCoachNotes(notes, isWarning) {
   const box = $("coachNotes");
@@ -2844,8 +2856,10 @@ if ($("btnTranscribe")) {
       }
       stopAiClock(btn, doneLabel, 3000);
     } catch(e) {
-      say("Transcription failed: " + e.message, "warn");
+      // Same idea: the local listener can write the words without Google.
       stopAiClock(btn);
+      say(shortReason(e) + " — writing the captions here instead…");
+      await transcribeFromVoice();
     }
   });
 }
@@ -2891,8 +2905,23 @@ if ($("btnAiSync")) {
       }
       stopAiClock(btn, doneLabel, 3000);
     } catch(e) {
-      say("AI Sync failed: " + e.message, "warn");
-      stopAiClock(btn);
+      /* Gemini is a shortcut, not the only way. When it is rate limited,
+         blocked or keyless, do the same job here instead of stopping. */
+      setAiClockLabel(btn, "Doing it here instead");
+      try {
+        const report = await autoTimeFromAudio();
+        renderChips();
+        refreshExports();
+        const notes = [describeDeadAir(report.deadAir || []), pacingReport()].filter(Boolean);
+        showCoachNotes(notes, (report.deadAir || []).length > 0);
+        say(`${shortReason(e)} — so I timed the words here instead, from ${report.from}. ` +
+            `Same result, no key needed: that's what “⏱ Time it for me” does.`, "ok");
+        stopAiClock(btn, "✅ Timed here", 2600);
+      } catch (local) {
+        say("AI Sync failed (" + shortReason(e) + "), and timing it here also failed: " +
+            (local.message || local), "warn");
+        stopAiClock(btn);
+      }
     }
   });
 }
