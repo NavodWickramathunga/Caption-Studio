@@ -56,8 +56,14 @@ let videoURL = null, audioURL = null;
    ============================================================ */
 S.clips = [];          // { file, url, el, duration, start }
 
+/* Off the screen, but NOT display:none. A hidden video element is not
+   decoded, so drawing it to a canvas paints black - which is exactly how
+   an export came back with captions and sound over an empty picture. */
 const clipEls = document.createElement("div");
-clipEls.style.display = "none";
+clipEls.style.cssText =
+  "position:fixed;left:-10000px;top:0;width:2px;height:2px;overflow:hidden;" +
+  "opacity:0.01;pointer-events:none;z-index:-1";
+clipEls.setAttribute("aria-hidden", "true");
 document.body.appendChild(clipEls);
 
 /* How much of a clip can actually be played.
@@ -1878,17 +1884,33 @@ async function pickH264(width, height, framerate) {
 function seekElement(el, t) {
   return new Promise(resolve => {
     let settled = false;
-    const done = () => {
+    const finish = () => {
       if (settled) return;
       settled = true;
-      el.removeEventListener("seeked", done);
+      el.removeEventListener("seeked", onSeeked);
       resolve();
     };
-    if (Math.abs(el.currentTime - t) < 0.001 && el.readyState >= 2) return done();
-    el.addEventListener("seeked", done);
-    try { el.currentTime = t; } catch (e) { return done(); }
-    setTimeout(done, 400);      // never hang on a clip that will not seek
+    /* 'seeked' can fire before there is a frame to paint, so wait for the
+       element to actually hold current data before drawing it. */
+    const whenReady = (tries = 0) => {
+      if (el.readyState >= 2 || tries > 20) return finish();
+      setTimeout(() => whenReady(tries + 1), 15);
+    };
+    const onSeeked = () => whenReady();
+    if (Math.abs(el.currentTime - t) < 0.001 && el.readyState >= 2) return finish();
+    el.addEventListener("seeked", onSeeked);
+    try { el.currentTime = t; } catch (e) { return finish(); }
+    setTimeout(finish, 700);      // never hang on a clip that will not seek
   });
+}
+
+/* Is anything actually painted here, or is it an empty frame? */
+function canvasHasPicture(ctx, W, H) {
+  const step = Math.max(1, Math.floor(W / 24));
+  const d = ctx.getImageData(0, 0, W, Math.min(H, 200)).data;
+  let sum = 0, n = 0;
+  for (let i = 0; i < d.length; i += 4 * step) { sum += d[i] + d[i + 1] + d[i + 2]; n++; }
+  return n ? (sum / n / 3) > 6 : false;
 }
 
 /* The whole soundtrack, decoded up front at full quality, so the audio
@@ -1979,6 +2001,19 @@ async function renderMp4() {
       if (hit) {
         await seekElement(hit.clip.el, Math.min(hit.local, Math.max(0, hit.clip.duration - 0.02)));
         drawClipFitted(rctx, hit.clip.el, W, H);
+
+        /* Check the very first frame really carries the footage. A hidden
+           video element paints nothing, and shipping a black render is far
+           worse than stopping and saying so. */
+        if (i === 0 && !canvasHasPicture(rctx, W, H)) {
+          // one retry: give the element a moment and draw again
+          await new Promise(r => setTimeout(r, 250));
+          drawClipFitted(rctx, hit.clip.el, W, H);
+          if (!canvasHasPicture(rctx, W, H)) {
+            throw new Error("the picture isn't coming through — the clip decoded to an empty frame. " +
+                            "Try the .webm button, or reload the page and load the clip again.");
+          }
+        }
       } else {
         rctx.fillStyle = "#000"; rctx.fillRect(0, 0, W, H);
       }
