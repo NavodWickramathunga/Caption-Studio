@@ -1834,7 +1834,8 @@ async function burnIn() {
   seekAll(0);
   await new Promise(r => setTimeout(r, 200));
 
-  rec.onstop = () => {
+  const recStart = performance.now();
+  rec.onstop = async () => {
     const peak = levelMeter ? levelMeter.peak() : 0;
     const hadAudio = stream.getAudioTracks().length > 0 && peak >= AUDIBLE;
     if (levelMeter) levelMeter.close();
@@ -1844,7 +1845,12 @@ async function burnIn() {
     S.recording = false;
     pauseAll();
     video.muted = (S.voMode === "file" && S.hasAudio);
-    download(baseName() + "-captioned.webm", new Blob(chunks, { type: mime }));
+
+    // How long the recording actually ran, which is what players need told.
+    const recorded = (performance.now() - recStart) / 1000;
+    say("Finishing the file…");
+    const fixed = await withWebmDuration(new Blob(chunks, { type: mime }), recorded);
+    download(baseName() + "-captioned.webm", fixed);
 
     /* Facebook and YouTube need the voice inside the file - a silent export
        is a wasted render, so say so plainly rather than letting it be
@@ -2306,6 +2312,115 @@ function pacingReport() {
   if (wps < 2.0) return `Pace is ${wps.toFixed(1)} words/sec — slow for a Reel. Try speeding the voice up.`;
   if (wps > 4.5) return `Pace is ${wps.toFixed(1)} words/sec — very fast; captions may be hard to read.`;
   return `Pace is ${wps.toFixed(1)} words/sec — good for short-form.`;
+}
+
+/* ============================================================
+   MediaRecorder writes WebM with no Duration at all, so players cannot
+   tell how long the video is. They then refuse to seek and often appear
+   to stall before the end - the footage is all there, but nothing knows
+   where the end is.
+
+   The Segment is written with unknown size and there are no Cues, so a
+   Duration can be inserted into the Info block without disturbing a
+   single byte of the media that follows.
+   ============================================================ */
+function ebmlVint(bytes, at) {
+  const first = bytes[at];
+  let len = 1, mask = 0x80;
+  while (len <= 8 && !(first & mask)) { mask >>= 1; len++; }
+  if (len > 8) return null;
+  let val = first & (mask - 1);
+  let allOnes = (first & (mask - 1)) === (mask - 1);
+  for (let i = 1; i < len; i++) {
+    val = val * 256 + bytes[at + i];
+    if (bytes[at + i] !== 0xff) allOnes = false;
+  }
+  return { len, val, unknown: allOnes };
+}
+
+function encodeVint(value) {
+  for (let len = 1; len <= 8; len++) {
+    if (value <= Math.pow(2, 7 * len) - 2) {
+      const out = new Uint8Array(len);
+      let v = value;
+      for (let i = len - 1; i > 0; i--) { out[i] = v & 0xff; v = Math.floor(v / 256); }
+      out[0] = (v & 0xff) | (0x80 >> (len - 1));
+      return out;
+    }
+  }
+  return null;
+}
+
+function findEbmlId(bytes, hex, from, to) {
+  const id = [];
+  for (let i = 0; i < hex.length; i += 2) id.push(parseInt(hex.substr(i, 2), 16));
+  const end = Math.min(to, bytes.length - id.length);
+  for (let i = from; i <= end; i++) {
+    let ok = true;
+    for (let j = 0; j < id.length; j++) if (bytes[i + j] !== id[j]) { ok = false; break; }
+    if (ok) return i;
+  }
+  return -1;
+}
+
+/* Returns a new Blob with the duration written in. On anything unexpected
+   it returns the original untouched - a file with no duration is far
+   better than one that has been mangled. */
+async function withWebmDuration(blob, seconds) {
+  try {
+    if (!isFinite(seconds) || seconds <= 0) return blob;
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    if (bytes.length < 64) return blob;
+    if (!(bytes[0] === 0x1a && bytes[1] === 0x45 && bytes[2] === 0xdf && bytes[3] === 0xa3)) return blob;
+
+    const SEARCH = Math.min(bytes.length, 8192);
+    const infoAt = findEbmlId(bytes, "1549a966", 0, SEARCH);
+    if (infoAt < 0) return blob;
+
+    const sz = ebmlVint(bytes, infoAt + 4);
+    if (!sz || sz.unknown) return blob;
+    const contentAt = infoAt + 4 + sz.len;
+    const contentEnd = contentAt + sz.val;
+    if (contentEnd > bytes.length) return blob;
+
+    let scale = 1000000;
+    const tsAt = findEbmlId(bytes, "2ad7b1", contentAt, contentEnd);
+    if (tsAt >= 0) {
+      const tsz = ebmlVint(bytes, tsAt + 3);
+      if (tsz && !tsz.unknown && tsz.val <= 8) {
+        let v = 0;
+        for (let i = 0; i < tsz.val; i++) v = v * 256 + bytes[tsAt + 3 + tsz.len + i];
+        if (v > 0) scale = v;
+      }
+    }
+    const ticks = seconds * 1e9 / scale;
+
+    const durAt = findEbmlId(bytes, "4489", contentAt, contentEnd);
+    if (durAt >= 0) {
+      const dsz = ebmlVint(bytes, durAt + 2);
+      if (!dsz || dsz.val !== 8) return blob;
+      const copy = bytes.slice();
+      new DataView(copy.buffer).setFloat64(durAt + 2 + dsz.len, ticks, false);
+      return new Blob([copy], { type: blob.type });
+    }
+
+    const dur = new Uint8Array(11);
+    dur[0] = 0x44; dur[1] = 0x89; dur[2] = 0x88;
+    new DataView(dur.buffer).setFloat64(3, ticks, false);
+
+    const newSize = encodeVint(sz.val + dur.length);
+    if (!newSize) return blob;
+
+    return new Blob([
+      bytes.slice(0, infoAt + 4),
+      newSize,
+      bytes.slice(contentAt, contentEnd),
+      dur,
+      bytes.slice(contentEnd)
+    ], { type: blob.type });
+  } catch (e) {
+    return blob;
+  }
 }
 
 /* ============================================================
