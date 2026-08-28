@@ -60,6 +60,25 @@ const clipEls = document.createElement("div");
 clipEls.style.display = "none";
 document.body.appendChild(clipEls);
 
+/* How much of a clip can actually be played.
+
+   A container can claim a length the media does not deliver - a file that
+   says 30s but stops at 28.13s. Trusting the claim lets the timeline seek
+   into nothing and leaves the recorder waiting for an end that never
+   comes, so take whichever is smaller: the stated duration or the last
+   position the browser says it can seek to. */
+function playableLength(el) {
+  const stated = isFinite(el.duration) ? el.duration : 0;
+  let seekable = 0;
+  try {
+    if (el.seekable && el.seekable.length) seekable = el.seekable.end(el.seekable.length - 1);
+  } catch (e) {}
+  if (!isFinite(seekable) || seekable <= 0) return stated;
+  if (!stated) return seekable;
+  // a small gap is normal rounding; a large one means the file is overstating
+  return (stated - seekable > 0.25) ? seekable : stated;
+}
+
 function totalClipDuration() {
   return S.clips.reduce((a, c) => a + (isFinite(c.duration) ? c.duration : 0), 0);
 }
@@ -99,7 +118,7 @@ function loadClipFiles(files) {
     const clip = { file: f, url, el, duration: 0, start: 0, name: f.name };
     S.clips.push(clip);
     el.addEventListener("loadedmetadata", () => {
-      clip.duration = isFinite(el.duration) ? el.duration : 0;
+      clip.duration = playableLength(el);
       if (--pending === 0) afterClipsLoaded();
       recomputeClipStarts();
       renderClipList();
@@ -1865,8 +1884,15 @@ async function burnIn() {
     // How long the recording actually ran, which is what players need told.
     const recorded = (performance.now() - recStart) / 1000;
     say("Finishing the file…");
-    const fixed = await withWebmDuration(new Blob(chunks, { type: mime }), recorded);
-    download(baseName() + "-captioned.webm", fixed);
+    const original = new Blob(chunks, { type: mime });
+    let out = original;
+    if (original.size > 1024) {
+      const patched = await withWebmDuration(original, recorded);
+      // Only hand over the patched file if it still opens. A missing
+      // duration is a nuisance; a file that will not play is a lost render.
+      out = (patched !== original && await opensCleanly(patched)) ? patched : original;
+    }
+    download(baseName() + "-captioned.webm", out);
 
     /* Facebook and YouTube need the voice inside the file - a silent export
        is a wasted render, so say so plainly rather than letting it be
@@ -1896,11 +1922,20 @@ async function burnIn() {
   const cardSecs = endCardSeconds();
   let cardStart = 0;              // wall-clock ms when the end card began
 
+  let lastT = -1, lastMoved = performance.now();
   const tick = () => {
     if (levelMeter) levelMeter.sample();
     advanceClipIfEnded();               // roll into the next clip mid-recording
     const t = nowTime();
-    const clipDone = t >= dur - 0.04 || (timelineEnded() && (!S.hasAudio || audio.ended));
+
+    /* A file that overstates its length simply stops advancing, and waiting
+       for an 'ended' that never fires produced a recording of a frozen
+       frame. Treat a stalled clock as the end. */
+    if (Math.abs(t - lastT) > 0.01) { lastT = t; lastMoved = performance.now(); }
+    const stalledHere = !video.paused && (performance.now() - lastMoved > 1600);
+
+    const clipDone = t >= dur - 0.04 || stalledHere ||
+                     (timelineEnded() && (!S.hasAudio || audio.ended));
 
     if (!clipDone) {
       drawClipFitted(rctx, video, W, H);
@@ -1950,7 +1985,7 @@ window.__cs = { S, buildASS, buildSRT, buildJSON, markWord, undoMark, resyncFrom
                 // clip timeline
                 clipAt, totalClipDuration, recomputeClipStarts, renderClipList, outputSize,
                 checkClipSound, updateSoundSummary, gatherTimingAudio, decodeMono, shortReason,
-                withWebmDuration, captureClipAudio, clipAudio,
+                withWebmDuration, captureClipAudio, clipAudio, opensCleanly, playableLength,
                 seekAll, nowTime, totalTime, moveClip, removeClip,
                 get activeClip() { return activeClip; }, set activeClip(v) { activeClip = v; } };
 
@@ -2378,6 +2413,27 @@ function findEbmlId(bytes, hex, from, to) {
     if (ok) return i;
   }
   return -1;
+}
+
+/* Can the browser still open this? Used to prove a patched file before it
+   is handed over, so a header edit can never cost a whole render. */
+function opensCleanly(blob) {
+  return new Promise(res => {
+    const v = document.createElement("video");
+    const url = URL.createObjectURL(blob);
+    let settled = false;
+    const done = ok => {
+      if (settled) return;
+      settled = true;
+      URL.revokeObjectURL(url);
+      res(ok);
+    };
+    v.preload = "metadata";
+    v.onloadedmetadata = () => done(v.videoWidth > 0 || isFinite(v.duration));
+    v.onerror = () => done(false);
+    setTimeout(() => done(false), 6000);
+    v.src = url;
+  });
 }
 
 /* Returns a new Blob with the duration written in. On anything unexpected
