@@ -1815,7 +1815,7 @@ function say(msg, kind) {
 function refreshExports() {
   const ok = allTimed();
   ["expAss", "btnExportAss", "expSrt", "btnExportSrt", "expFbSrt", "btnExportFbSrt",
-   "expJson", "btnExportJson", "expBurn", "btnExportWebm"].forEach(id => {
+   "expJson", "btnExportJson", "expBurn", "btnExportWebm", "btnExportMp4"].forEach(id => {
     if ($(id)) $(id).disabled = !ok || S.recording;
   });
   if (S.recording) return;
@@ -1828,6 +1828,200 @@ function refreshExports() {
   }
   if (typeof saveSessionState === "function") saveSessionState();
 }
+
+/* ============================================================
+   Saving as MP4.
+
+   MediaRecorder only makes WebM, which Facebook Reels will not take, and
+   converting it needs ffmpeg this machine does not have. The browser can
+   encode H.264 and AAC directly, so build the file here instead: frames
+   from the same canvas the preview uses, sound from whatever is playing,
+   muxed into a real MP4 with a proper duration.
+   ============================================================ */
+const MP4_MUXER_URL = "https://cdn.jsdelivr.net/npm/mp4-muxer@5.2.1/+esm";
+let muxerLib = null;
+
+async function getMuxer() {
+  if (!muxerLib) muxerLib = await import(MP4_MUXER_URL);
+  return muxerLib;
+}
+
+const CAN_MP4 = !!(window.VideoEncoder && window.AudioEncoder &&
+                   window.VideoFrame && window.AudioData);
+
+/* Best H.264 profile this machine will take at the given size. */
+async function pickH264(width, height, framerate) {
+  const tries = ["avc1.640028", "avc1.4D0028", "avc1.42E01F"];
+  for (const codec of tries) {
+    try {
+      const s = await VideoEncoder.isConfigSupported({
+        codec, width, height, bitrate: 8e6, framerate
+      });
+      if (s.supported) return codec;
+    } catch (e) {}
+  }
+  return null;
+}
+
+async function exportMp4() {
+  if (!CAN_MP4) {
+    say("This browser can't build MP4 files. Use the .webm button instead.", "warn");
+    return;
+  }
+  const { w: W, h: H } = outputSize();
+  if (!W || !H) { say("Add your clips in step 1 first.", "warn"); return; }
+  if (!allTimed()) { say("Finish the timings in step 4 first.", "warn"); return; }
+
+  const FPS = 30;
+  const btn = $("btnExportMp4");
+  S.recording = true;
+  refreshExports();
+  startAiClock(btn, "Preparing");
+
+  let venc = null, aenc = null, audioNode = null, audioCtx = null;
+  try {
+    const { Muxer, ArrayBufferTarget } = await getMuxer();
+    const codec = await pickH264(W, H, FPS);
+    if (!codec) throw new Error("This browser won't encode H.264 at " + W + "×" + H + ".");
+
+    // Sound first, so the muxer knows whether to expect an audio track.
+    const speaking = S.voMode === "generated" && CAN_SPEAK && $("voice").value !== "";
+    let track = null;
+    if (!speaking) { try { track = stableAudioTrack(master()); } catch (e) {} }
+
+    const AC = window.AudioContext || window.webkitAudioContext;
+    let SR = 48000, CH = 1;
+    if (track) {
+      audioCtx = new AC();
+      SR = audioCtx.sampleRate;
+    }
+
+    const muxer = new Muxer({
+      target: new ArrayBufferTarget(),
+      video: { codec: "avc", width: W, height: H },
+      ...(track ? { audio: { codec: "aac", numberOfChannels: CH, sampleRate: SR } } : {}),
+      fastStart: "in-memory"
+    });
+
+    venc = new VideoEncoder({
+      output: (c, m) => muxer.addVideoChunk(c, m),
+      error: e => { throw e; }
+    });
+    venc.configure({ codec, width: W, height: H, bitrate: 8e6, framerate: FPS });
+
+    let audioSamples = 0;
+    if (track) {
+      aenc = new AudioEncoder({
+        output: (c, m) => muxer.addAudioChunk(c, m),
+        error: e => { throw e; }
+      });
+      aenc.configure({ codec: "mp4a.40.2", numberOfChannels: CH, sampleRate: SR, bitrate: 128000 });
+
+      const src = audioCtx.createMediaStreamSource(new MediaStream([track]));
+      audioNode = audioCtx.createScriptProcessor(4096, 1, 1);
+      audioNode.onaudioprocess = e => {
+        if (!aenc || aenc.state !== "configured") return;
+        const inBuf = e.inputBuffer.getChannelData(0);
+        const copy = new Float32Array(inBuf.length);
+        copy.set(inBuf);
+        const ad = new AudioData({
+          format: "f32-planar", sampleRate: SR, numberOfFrames: copy.length,
+          numberOfChannels: CH, timestamp: Math.round(audioSamples * 1e6 / SR), data: copy
+        });
+        audioSamples += copy.length;
+        try { aenc.encode(ad); } catch (err) {}
+        ad.close();
+      };
+      src.connect(audioNode);
+      audioNode.connect(audioCtx.destination);
+    }
+
+    // Draw into an offscreen canvas at the export size.
+    const rc = document.createElement("canvas");
+    rc.width = W; rc.height = H;
+    const rctx = rc.getContext("2d");
+
+    const dur = totalTime();
+    const cardSecs = endCardSeconds();
+    setAiClockLabel(btn, "Recording");
+
+    pauseAll();
+    seekAll(0);
+    await new Promise(r => setTimeout(r, 200));
+    if (speaking) speakScript(false); else playAll();
+
+    const started = performance.now();
+    let frames = 0, lastT = -1, lastMoved = performance.now(), cardStart = 0;
+
+    await new Promise(resolve => {
+      const step = () => {
+        const t = nowTime();
+        if (Math.abs(t - lastT) > 0.01) { lastT = t; lastMoved = performance.now(); }
+        const stalled = !video.paused && (performance.now() - lastMoved > 1600);
+        const clipDone = t >= dur - 0.04 || stalled ||
+                         (timelineEnded() && (!S.hasAudio || audio.ended));
+
+        if (!clipDone) {
+          advanceClipIfEnded();
+          drawClipFitted(rctx, video, W, H);
+          drawCaptions(rctx, W, H, t);
+          say("Building MP4 — " + Math.min(99, Math.round(t / dur * 100)) + "%");
+        } else if (cardSecs > 0) {
+          if (!cardStart) cardStart = performance.now();
+          const el = (performance.now() - cardStart) / 1000;
+          drawClipFitted(rctx, video, W, H);
+          drawEndCard(rctx, W, H, el / cardSecs);
+          say("Building the end card…");
+          if (el >= cardSecs) return resolve();
+        } else return resolve();
+
+        // one frame per 1/FPS of elapsed wall time, so the file runs at speed
+        const want = Math.floor((performance.now() - started) / 1000 * FPS);
+        if (want > frames) {
+          const ts = Math.round(frames * 1e6 / FPS);
+          const vf = new VideoFrame(rc, { timestamp: ts, duration: Math.round(1e6 / FPS) });
+          try { venc.encode(vf, { keyFrame: frames % 60 === 0 }); } catch (e) {}
+          vf.close();
+          frames++;
+        }
+        if (performance.now() - started > (dur + cardSecs + 25) * 1000) return resolve();
+        requestAnimationFrame(step);
+      };
+      requestAnimationFrame(step);
+    });
+
+    setAiClockLabel(btn, "Finishing");
+    if (audioNode) { try { audioNode.disconnect(); } catch (e) {} audioNode.onaudioprocess = null; }
+    await venc.flush();
+    if (aenc) await aenc.flush();
+    muxer.finalize();
+
+    const blob = new Blob([muxer.target.buffer], { type: "video/mp4" });
+    const ok = await opensCleanly(blob);
+    if (!ok) throw new Error("The MP4 came out unreadable — use the .webm button instead.");
+
+    download(baseName() + "-captioned.mp4", blob);
+    const secs = frames / FPS;
+    say(`Saved ${baseName()}-captioned.mp4 — ${W}×${H}, ${secs.toFixed(1)}s, ` +
+        `${(blob.size / 1048576).toFixed(1)} MB` +
+        (track ? ", with sound." : ", but SILENT — no audio was playing.") +
+        ` Ready to upload to ${plat().label}.`, track ? "ok" : "warn");
+    stopAiClock(btn, "✅ Saved MP4", 2600);
+  } catch (e) {
+    stopAiClock(btn);
+    say("MP4 export failed: " + (e.message || e) + " — the .webm button still works.", "warn");
+  } finally {
+    try { if (venc && venc.state !== "closed") venc.close(); } catch (e) {}
+    try { if (aenc && aenc.state !== "closed") aenc.close(); } catch (e) {}
+    try { if (audioCtx) audioCtx.close(); } catch (e) {}
+    if (speakingNow()) stopSpeaking();
+    S.recording = false;
+    pauseAll();
+    refreshExports();
+  }
+}
+const speakingNow = () => CAN_SPEAK && (TTS.speaking || TTS.pending);
+if ($("btnExportMp4")) $("btnExportMp4").addEventListener("click", exportMp4);
 
 /* ============================================================
    Burn-in recorder
@@ -2044,7 +2238,7 @@ window.__cs = { S, buildASS, buildSRT, buildJSON, markWord, undoMark, resyncFrom
                 clipAt, totalClipDuration, recomputeClipStarts, renderClipList, outputSize,
                 checkClipSound, updateSoundSummary, gatherTimingAudio, decodeMono, shortReason,
                 withWebmDuration, captureClipAudio, clipAudio, opensCleanly, playableLength,
-                autoFit, FIT_TOLERANCE,
+                autoFit, FIT_TOLERANCE, exportMp4, CAN_MP4, pickH264, outputSize,
                 seekAll, nowTime, totalTime, moveClip, removeClip,
                 get activeClip() { return activeClip; }, set activeClip(v) { activeClip = v; } };
 
