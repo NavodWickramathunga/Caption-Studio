@@ -1934,6 +1934,7 @@ window.__cs = { S, buildASS, buildSRT, buildJSON, markWord, undoMark, resyncFrom
                 // clip timeline
                 clipAt, totalClipDuration, recomputeClipStarts, renderClipList, outputSize,
                 checkClipSound, updateSoundSummary, gatherTimingAudio, decodeMono, shortReason,
+                withWebmDuration, captureClipAudio, clipAudio,
                 seekAll, nowTime, totalTime, moveClip, removeClip,
                 get activeClip() { return activeClip; }, set activeClip(v) { activeClip = v; } };
 
