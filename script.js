@@ -962,6 +962,16 @@ function setMode(mode) {
   syncTransport();
 }
 if ($("modeOwn"))  $("modeOwn").addEventListener("click",  () => setMode("own"));
+/* The ElevenLabs tab has no panel behind it, so clicking it did nothing at
+   all. Say why, and point at the route that gets the same result. */
+if ($("modePremium")) {
+  $("modePremium").addEventListener("click", () => {
+    $("modePremium").setAttribute("aria-selected", "false");
+    setMode("file");
+    say("ElevenLabs isn't built in — it needs a paid account and a key. " +
+        "Make the voiceover there, save the audio, and load it here instead.", "warn");
+  });
+}
 $("modeGen").addEventListener("click", () => setMode("generated"));
 $("modeFile").addEventListener("click", () => setMode("file"));
 
@@ -2062,6 +2072,8 @@ async function exportMp4() {
     refreshExports();
   }
 }
+
+if ($("btnExportMp4")) $("btnExportMp4").addEventListener("click", exportMp4);
 
 /* ============================================================
    Burn-in recorder
