@@ -1927,6 +1927,7 @@ window.__cs = { S, buildASS, buildSRT, buildJSON, markWord, undoMark, resyncFrom
                 setMode, loadVoices, CAN_SPEAK, get voices() { return voices; },
                 // clip timeline
                 clipAt, totalClipDuration, recomputeClipStarts, renderClipList, outputSize,
+                checkClipSound, updateSoundSummary, gatherTimingAudio, decodeMono, shortReason,
                 seekAll, nowTime, totalTime, moveClip, removeClip,
                 get activeClip() { return activeClip; }, set activeClip(v) { activeClip = v; } };
 
