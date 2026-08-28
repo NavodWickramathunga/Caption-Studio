@@ -579,10 +579,21 @@ function paintScrub() {
 
 /* The output size is fixed by the FIRST clip. Later clips of a different
    size are fitted into it, so the frame never changes shape part-way through. */
+/* Every platform tops out at 1080 across for vertical video, so anything
+   larger is bytes nobody sees: a 1440-wide clip carries 78% more pixels
+   than 1080 and is re-encoded down on upload anyway. Cap it, keeping the
+   shape, and round to even numbers because encoders require it. */
+const MAX_OUT_WIDTH = 1080, MAX_OUT_HEIGHT = 1920;
+
 function outputSize() {
   const first = S.clips[0];
-  const w = (first && first.el.videoWidth) || video.videoWidth || 1080;
-  const h = (first && first.el.videoHeight) || video.videoHeight || 1920;
+  let w = (first && first.el.videoWidth) || video.videoWidth || 1080;
+  let h = (first && first.el.videoHeight) || video.videoHeight || 1920;
+  const scale = Math.min(1, MAX_OUT_WIDTH / w, MAX_OUT_HEIGHT / h);
+  if (scale < 1) {
+    w = Math.round(w * scale / 2) * 2;
+    h = Math.round(h * scale / 2) * 2;
+  }
   return { w, h };
 }
 
