@@ -1099,14 +1099,20 @@ function speakScript(recordTimings) {
       const filled = normalizeTimings(spoken);
       S.spokenDur = spoken;
       renderChips();
-      let msg = "Timed " + S.words.length + " words from the voiceover";
-      if (filled) msg += " (" + filled + " estimated between boundaries)";
-      msg += ". Voiceover " + spoken.toFixed(1) + "s · video " + totalTime().toFixed(1) + "s.";
-      if (speakRun.usedWallClock) {
-        msg += " (the video wouldn't play, so timings came from the voice itself — press Play to check they line up)";
+
+      // Correct the speed and go again if the voice missed the video's
+      // length. autoFit reports the outcome itself, so only speak here
+      // when it has decided nothing more is needed.
+      const retrying = autoFit(spoken);
+      if (!retrying) {
+        let extra = "";
+        if (filled) extra += " " + filled + " word" + (filled === 1 ? " was" : "s were") + " estimated between boundaries.";
+        if (speakRun.usedWallClock) {
+          extra += " The video wouldn't play, so the timings came from the voice itself — press Play to check they line up.";
+        }
+        if (extra) setVoStatus($("voStatus").textContent + extra, speakRun.usedWallClock ? "warn" : "ok");
+        refreshExports();
       }
-      setVoStatus(msg, speakRun.usedWallClock ? "warn" : "ok");
-      offerFit(spoken);
     } else {
       setVoStatus("");
     }
@@ -1141,29 +1147,70 @@ function stopSpeaking() {
 }
 
 /* --- when the voiceover overruns the clip, offer to slow it to fit --- */
-function offerFit(spoken) {
-  const vid = isFinite(video.duration) ? video.duration : 0;
+/* ============================================================
+   Make the voice fit the video by itself.
+
+   Speaking a script takes however long it takes, which is rarely the
+   length of the clip. Measuring that and offering a button put the work
+   back on you. Instead: speak, measure, correct the speed, speak again -
+   and stop. One press, and the voice lands on the video.
+   ============================================================ */
+const FIT_TOLERANCE = 0.04;   // within 4% is close enough to leave alone
+let fitAttempt = 0;           // guards against speaking in circles
+
+function autoFit(spoken) {
   const btn = $("fitVideo");
-  if (!vid || !spoken || Math.abs(spoken - vid) < 0.35) { btn.style.display = "none"; return; }
-  // rate is a speed multiplier, so duration goes as 1/rate:
-  // to stretch a `spoken`-second read into `vid` seconds, scale the rate by spoken/vid.
+  const vid = totalTime() || (isFinite(video.duration) ? video.duration : 0);
+  if (btn) btn.style.display = "none";
+  if (!vid || !spoken) return false;
+
+  const off = Math.abs(spoken - vid) / vid;
+  if (off <= FIT_TOLERANCE) {
+    fitAttempt = 0;
+    setVoStatus(`Timed ${S.words.length} words. The voice fits the video — ` +
+                `${spoken.toFixed(1)}s against ${vid.toFixed(1)}s.`, "ok");
+    return false;
+  }
+
+  // rate is a speed multiplier, so duration goes as 1/rate
   const ideal = S.rate * (spoken / vid);
   const target = Math.min(2, Math.max(0.5, ideal));
-  btn.textContent = (spoken > vid ? "Speed it up" : "Slow it down") +
-                    " to fit the video (" + target.toFixed(2) + "×)";
-  btn.title = Math.abs(ideal - target) > 0.01
-    ? "Clamped to " + target.toFixed(2) + "× — a natural-sounding voice only stretches so far, so this gets closer without fitting exactly."
-    : "";
-  btn.style.display = "";
-  btn.onclick = () => {
-    $("rate").value = target;
-    $("rate").dispatchEvent(new Event("input"));
-    btn.style.display = "none";
-    speakScript(true);
-  };
+
+  if (fitAttempt >= 2 || Math.abs(target - S.rate) < 0.01) {
+    // As close as the voice will stretch. Say where it landed and why.
+    fitAttempt = 0;
+    const clamped = Math.abs(ideal - target) > 0.01;
+    setVoStatus(
+      `Timed ${S.words.length} words. Voice ${spoken.toFixed(1)}s, video ${vid.toFixed(1)}s — ` +
+      (clamped
+        ? `as close as the voice will stretch. Shorten or lengthen the script to close the rest.`
+        : `close enough.`),
+      clamped ? "warn" : "ok");
+    if (btn && clamped) {
+      btn.textContent = spoken > vid ? "Try speeding it up further" : "Try slowing it down further";
+      btn.style.display = "";
+      btn.onclick = () => {
+        $("rate").value = Math.min(2, Math.max(0.5, S.rate * (spoken / vid)));
+        $("rate").dispatchEvent(new Event("input"));
+        btn.style.display = "none";
+        fitAttempt = 0;
+        speakScript(true);
+      };
+    }
+    return false;
+  }
+
+  // Adjust and go again, without asking.
+  fitAttempt++;
+  $("rate").value = target.toFixed(2);
+  $("rate").dispatchEvent(new Event("input"));
+  setVoStatus(`Voice was ${spoken.toFixed(1)}s against a ${vid.toFixed(1)}s video — ` +
+              `${spoken > vid ? "speeding up" : "slowing down"} to ${target.toFixed(2)}× and re-timing…`);
+  setTimeout(() => speakScript(true), 350);
+  return true;
 }
 
-$("speakTime").addEventListener("click", () => speakScript(true));
+$("speakTime").addEventListener("click", () => { fitAttempt = 0; speakScript(true); });
 $("speakPlay").addEventListener("click", () => speakScript(false));
 $("speakStop").addEventListener("click", () => { stopSpeaking(); setVoStatus(""); });
 window.addEventListener("beforeunload", () => { if (CAN_SPEAK) TTS.cancel(); });
@@ -1986,6 +2033,7 @@ window.__cs = { S, buildASS, buildSRT, buildJSON, markWord, undoMark, resyncFrom
                 clipAt, totalClipDuration, recomputeClipStarts, renderClipList, outputSize,
                 checkClipSound, updateSoundSummary, gatherTimingAudio, decodeMono, shortReason,
                 withWebmDuration, captureClipAudio, clipAudio, opensCleanly, playableLength,
+                autoFit, FIT_TOLERANCE,
                 seekAll, nowTime, totalTime, moveClip, removeClip,
                 get activeClip() { return activeClip; }, set activeClip(v) { activeClip = v; } };
 
@@ -2701,7 +2749,8 @@ if ($("btnAutoTime")) {
        the clips - a clip with no sound is not a failure when the voice is
        being spoken here. */
     if (S.voMode === "generated" && CAN_SPEAK && $("voice").value !== "") {
-      say("Using the voice from step 2 — speaking it now and timing as it goes.");
+      say("Using the voice from step 2 — speaking it, timing it, and fitting it to the video.");
+      fitAttempt = 0;
       speakScript(true);
       return;
     }
