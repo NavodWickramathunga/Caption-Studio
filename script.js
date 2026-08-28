@@ -169,14 +169,16 @@ function moveClip(i, dir) {
 async function checkClipSound(clip) {
   clip.sound = "checking";
   renderClipList();
+  // Only the fast read here - playing every clip through on load would make
+  // adding five clips take a minute. The slow path runs when it is needed.
   try {
     const pcm = await decodeMono(clip.file, 16000);
     let peak = 0;
     for (let i = 0; i < pcm.length; i += 5) { const v = Math.abs(pcm[i]); if (v > peak) peak = v; }
     clip.peak = peak;
-    clip.sound = peak >= 0.005 ? "yes" : "silent";
+    clip.sound = peak >= 0.005 ? "yes" : "maybe";
   } catch (e) {
-    clip.sound = "unreadable";
+    clip.sound = "maybe";
   }
   renderClipList();
   updateSoundSummary();
@@ -190,13 +192,12 @@ function updateSoundSummary() {
   const bad = done.filter(c => c.sound !== "yes");
   if (!bad.length) { el.style.display = "none"; return; }
   el.style.display = "";
-  const allBad = bad.length === done.length;
-  el.textContent = allBad
-    ? (bad[0].sound === "unreadable"
-        ? "No sound could be read from these clips — this browser may not decode their audio. Timing from the voice won't work; use “Make one here” or “Load a file” in step 2."
-        : "These clips have no sound in them. Timing from the voice won't work — add a voiceover in step 2.")
-    : bad.length + " of your clips have no usable sound: " + bad.map(c => c.name).join(", ") +
-      ". Those stretches will be treated as silence.";
+  el.textContent = (bad.length === done.length
+    ? "No sound was found in the file itself. "
+    : bad.length + " of your clips gave no sound from the file. ") +
+    "That does not mean they are silent - the browser is fussy about reading audio out of some " +
+    "videos. Press “⏱ Time it for me” and they will be played through to capture it, which takes " +
+    "about as long as the clips themselves.";
 }
 
 function renderClipList() {
@@ -224,10 +225,9 @@ function renderClipList() {
 
     const snd = document.createElement("span");
     snd.className = "clip-snd";
-    if (c.sound === "yes")             { snd.textContent = "🔊"; snd.title = "Has a voice in it"; snd.classList.add("ok"); }
-    else if (c.sound === "silent")     { snd.textContent = "🔇"; snd.title = "No sound in this clip"; snd.classList.add("bad"); }
-    else if (c.sound === "unreadable") { snd.textContent = "⚠"; snd.title = "The sound couldn't be read from this clip"; snd.classList.add("bad"); }
-    else                               { snd.textContent = "·";  snd.title = "Checking for sound…"; }
+    if (c.sound === "yes")         { snd.textContent = "🔊"; snd.title = "Has a voice in it"; snd.classList.add("ok"); }
+    else if (c.sound === "maybe")  { snd.textContent = "🔈"; snd.title = "No sound found in the file - it will be played through to check"; }
+    else                           { snd.textContent = "·";  snd.title = "Checking for sound…"; }
 
     const up = document.createElement("button");
     up.textContent = "↑"; up.title = "Move earlier"; up.disabled = i === 0;
@@ -2308,6 +2308,93 @@ function pacingReport() {
   return `Pace is ${wps.toFixed(1)} words/sec — good for short-form.`;
 }
 
+/* ============================================================
+   Getting the sound out, the slow but reliable way.
+
+   decodeAudioData reads a file directly and is fast, but it is fussier
+   than the video player: some clips it simply refuses. When that happens,
+   play the clip through the audio graph instead and record what comes
+   out. That takes as long as the clip, but it works on anything the
+   browser can play - which is the whole point of the fallback.
+   ============================================================ */
+const elementGraphs = new WeakMap();
+
+function captureClipAudio(clip, sr, onProgress) {
+  return new Promise((resolve, reject) => {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return reject(new Error("No audio support in this browser."));
+    const el = clip.el;
+    let g = elementGraphs.get(el);
+    try {
+      if (!g) {
+        const ac = new AC();
+        const src = ac.createMediaElementSource(el);
+        g = { ac, src };
+        elementGraphs.set(el, g);
+      }
+    } catch (e) { return reject(new Error("Couldn't listen to that clip.")); }
+
+    const { ac, src } = g;
+    if (ac.state === "suspended") ac.resume().catch(() => {});
+    const proc = ac.createScriptProcessor(4096, 1, 1);
+    const chunks = [];
+    let done = false;
+
+    const finish = err => {
+      if (done) return;
+      done = true;
+      try { proc.disconnect(); src.disconnect(proc); } catch (e) {}
+      el.pause();
+      el.muted = true;
+      if (err) return reject(err);
+      // stitch, then resample to the rate the analysis wants
+      const total = chunks.reduce((a, c) => a + c.length, 0);
+      const joined = new Float32Array(total);
+      let at = 0;
+      chunks.forEach(c => { joined.set(c, at); at += c.length; });
+      if (ac.sampleRate === sr || !total) return resolve(joined);
+      const ratio = ac.sampleRate / sr;
+      const out = new Float32Array(Math.floor(total / ratio));
+      for (let i = 0; i < out.length; i++) out[i] = joined[Math.floor(i * ratio)] || 0;
+      resolve(out);
+    };
+
+    proc.onaudioprocess = e => {
+      chunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+      if (onProgress && el.duration) onProgress(Math.min(1, el.currentTime / el.duration));
+    };
+    src.connect(proc);
+    proc.connect(ac.destination);
+
+    el.onended = () => finish(null);
+    el.onerror = () => finish(new Error("That clip wouldn't play."));
+    el.muted = false;
+    el.currentTime = 0;
+    el.play().catch(() => finish(new Error("The browser wouldn't play that clip.")));
+
+    // never hang if 'ended' does not arrive
+    const cap = ((clip.duration || 30) + 8) * 1000;
+    setTimeout(() => finish(null), cap);
+  });
+}
+
+/* Fast read first, then the slow one if it comes back empty. */
+async function clipAudio(clip, sr, onNote) {
+  try {
+    const pcm = await decodeMono(clip.file, sr);
+    let peak = 0;
+    for (let i = 0; i < pcm.length; i += 5) { const v = Math.abs(pcm[i]); if (v > peak) peak = v; }
+    if (peak >= 0.005) return { pcm, how: "read from the file" };
+  } catch (e) { /* fall through to playing it */ }
+
+  if (onNote) onNote(clip);
+  const pcm = await captureClipAudio(clip, sr);
+  let peak = 0;
+  for (let i = 0; i < pcm.length; i += 5) { const v = Math.abs(pcm[i]); if (v > peak) peak = v; }
+  if (peak < 0.005) throw new Error("silent");
+  return { pcm, how: "captured while playing" };
+}
+
 /* Pull the sound out of one file as mono at a known rate. */
 async function decodeMono(file, sr) {
   const AC = window.AudioContext || window.webkitAudioContext;
@@ -2333,12 +2420,18 @@ async function gatherTimingAudio() {
   if (S.clips.length) {
     const parts = [];
     const failed = [];
+    let playedAny = false;
     for (const c of S.clips) {
       try {
-        parts.push(await decodeMono(c.file, SR));
+        const r = await clipAudio(c, SR, clip => {
+          playedAny = true;
+          say(`Reading “${clip.name}” the slow way — playing it through to capture the sound. ` +
+              `This takes about ${Math.round(clip.duration || 10)}s.`);
+        });
+        parts.push(r.pcm);
       } catch (e) {
-        // A clip that cannot be decoded is NOT a silent clip. Substituting
-        // silence here made a broken read look like a quiet video.
+        // A clip that will not give up its sound is NOT the same as a quiet
+        // one, and both are now reported for what they are.
         failed.push(c.name);
         parts.push(new Float32Array(Math.ceil((c.duration || 0) * SR)));
       }
@@ -2346,13 +2439,12 @@ async function gatherTimingAudio() {
     if (failed.length === S.clips.length) {
       throw new Error(
         failed.length === 1
-          ? `Couldn't read the sound out of “${failed[0]}”. The clip may have no audio track, ` +
-            `or be in a format this browser won't decode. Try it in step 2 under “Load a file”, ` +
-            `or check the clip plays with sound.`
-          : `Couldn't read the sound out of any of the ${failed.length} clips.`);
+          ? `“${failed[0]}” has no sound in it — the file was read and played through, and both were silent. ` +
+            `Veo does not always include audio. Add a voice in step 2 with “Make one here”, or “Load a file”.`
+          : `None of the ${failed.length} clips have any sound in them. Add a voice in step 2.`);
     }
     if (failed.length) {
-      say(`Note: no sound could be read from ${failed.join(", ")} — those parts are treated as silent.`, "warn");
+      say(`No sound in ${failed.join(", ")} — those stretches are treated as silence.`, "warn");
     }
     const total = parts.reduce((a, p) => a + p.length, 0);
     const pcm = new Float32Array(total);
