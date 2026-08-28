@@ -1863,165 +1863,205 @@ async function pickH264(width, height, framerate) {
   return null;
 }
 
-async function exportMp4() {
-  if (!CAN_MP4) {
-    say("This browser can't build MP4 files. Use the .webm button instead.", "warn");
-    return;
+/* Park a clip on an exact moment and wait until the frame is really there.
+   Drawing before this resolves is what put blank frames at the start. */
+function seekElement(el, t) {
+  return new Promise(resolve => {
+    let settled = false;
+    const done = () => {
+      if (settled) return;
+      settled = true;
+      el.removeEventListener("seeked", done);
+      resolve();
+    };
+    if (Math.abs(el.currentTime - t) < 0.001 && el.readyState >= 2) return done();
+    el.addEventListener("seeked", done);
+    try { el.currentTime = t; } catch (e) { return done(); }
+    setTimeout(done, 400);      // never hang on a clip that will not seek
+  });
+}
+
+/* The whole soundtrack, decoded up front at full quality, so the audio
+   does not depend on anything happening in real time. */
+async function gatherExportAudio(sr) {
+  const voiceover = $("audioFile").files && $("audioFile").files[0];
+  if (S.hasAudio && voiceover) {
+    try { return await decodeMono(voiceover, sr); } catch (e) { return null; }
   }
+  if (!S.clips.length) return null;
+  const parts = [];
+  let any = false;
+  for (const c of S.clips) {
+    let pcm = null;
+    try { pcm = await decodeMono(c.file, sr); } catch (e) {}
+    if (!pcm || !pcm.length) pcm = new Float32Array(Math.ceil((c.duration || 0) * sr));
+    else any = true;
+    parts.push(pcm);
+  }
+  if (!any) return null;
+  const total = parts.reduce((a, p) => a + p.length, 0);
+  const out = new Float32Array(total);
+  let at = 0;
+  parts.forEach(p => { out.set(p, at); at += p.length; });
+  return out;
+}
+
+/* ============================================================
+   Rendering an MP4 frame by frame.
+
+   Recording in real time captures whatever the canvas happens to hold,
+   which at the start is nothing - the opening was corrupted because the
+   encoder began before the first frame existed. Rendering instead means
+   every frame is drawn deliberately: park the clip on the exact moment,
+   wait for it, draw, encode. Nothing depends on playback keeping up.
+   ============================================================ */
+async function renderMp4() {
   const { w: W, h: H } = outputSize();
-  if (!W || !H) { say("Add your clips in step 1 first.", "warn"); return; }
+  const FPS = 30, SR = 48000, CH = 1;
+  const dur = totalTime();
+  const cardSecs = endCardSeconds();
+  const frameCount = Math.max(1, Math.round((dur + cardSecs) * FPS));
+  const btn = $("btnExportMp4");
+
+  const { Muxer, ArrayBufferTarget } = await getMuxer();
+  const codec = await pickH264(W, H, FPS);
+  if (!codec) throw new Error("This browser won't encode H.264 at " + W + "×" + H + ".");
+
+  setAiClockLabel(btn, "Reading the sound");
+  const pcm = await gatherExportAudio(SR);
+
+  const muxer = new Muxer({
+    target: new ArrayBufferTarget(),
+    video: { codec: "avc", width: W, height: H },
+    ...(pcm ? { audio: { codec: "aac", numberOfChannels: CH, sampleRate: SR } } : {}),
+    fastStart: "in-memory"
+  });
+
+  let encErr = null;
+  const venc = new VideoEncoder({
+    output: (c, m) => muxer.addVideoChunk(c, m),
+    error: e => { encErr = e; }
+  });
+  venc.configure({ codec, width: W, height: H, bitrate: 8e6, framerate: FPS });
+
+  let aenc = null;
+  if (pcm) {
+    aenc = new AudioEncoder({
+      output: (c, m) => muxer.addAudioChunk(c, m),
+      error: e => { encErr = e; }
+    });
+    aenc.configure({ codec: "mp4a.40.2", numberOfChannels: CH, sampleRate: SR, bitrate: 128000 });
+  }
+
+  const rc = document.createElement("canvas");
+  rc.width = W; rc.height = H;
+  const rctx = rc.getContext("2d", { alpha: false });
+
+  pauseAll();
+  S.clips.forEach(c => { try { c.el.pause(); } catch (e) {} });
+
+  for (let i = 0; i < frameCount; i++) {
+    if (encErr) throw encErr;
+    const t = i / FPS;
+
+    if (t < dur) {
+      const hit = clipAt(t);
+      if (hit) {
+        await seekElement(hit.clip.el, Math.min(hit.local, Math.max(0, hit.clip.duration - 0.02)));
+        drawClipFitted(rctx, hit.clip.el, W, H);
+      } else {
+        rctx.fillStyle = "#000"; rctx.fillRect(0, 0, W, H);
+      }
+      drawCaptions(rctx, W, H, t);
+    } else {
+      // hold the final frame and fade the call to action over it
+      const last = S.clips[S.clips.length - 1];
+      if (last) {
+        await seekElement(last.el, Math.max(0, last.duration - 0.05));
+        drawClipFitted(rctx, last.el, W, H);
+      }
+      drawEndCard(rctx, W, H, (t - dur) / Math.max(0.01, cardSecs));
+    }
+
+    const vf = new VideoFrame(rc, {
+      timestamp: Math.round(i * 1e6 / FPS),
+      duration: Math.round(1e6 / FPS)
+    });
+    venc.encode(vf, { keyFrame: i % 60 === 0 });
+    vf.close();
+
+    if (venc.encodeQueueSize > 16) await new Promise(r => setTimeout(r, 4));
+    if (i % 5 === 0) {
+      const pct = Math.round((i / frameCount) * 100);
+      setAiClockLabel(btn, "Rendering " + pct + "%");
+      say(`Rendering frame ${i + 1} of ${frameCount} — ${pct}%`);
+    }
+  }
+
+  if (pcm && aenc) {
+    setAiClockLabel(btn, "Adding the sound");
+    const CHUNK = 4096;
+    const wanted = Math.min(pcm.length, Math.round((dur + cardSecs) * SR));
+    for (let off = 0; off < wanted; off += CHUNK) {
+      const n = Math.min(CHUNK, wanted - off);
+      const slice = new Float32Array(n);
+      slice.set(pcm.subarray(off, off + n));
+      const ad = new AudioData({
+        format: "f32-planar", sampleRate: SR, numberOfFrames: n,
+        numberOfChannels: CH, timestamp: Math.round(off * 1e6 / SR), data: slice
+      });
+      aenc.encode(ad);
+      ad.close();
+      if (aenc.encodeQueueSize > 16) await new Promise(r => setTimeout(r, 4));
+    }
+  }
+
+  setAiClockLabel(btn, "Finishing");
+  await venc.flush();
+  if (aenc) await aenc.flush();
+  muxer.finalize();
+  try { venc.close(); } catch (e) {}
+  try { if (aenc) aenc.close(); } catch (e) {}
+  if (encErr) throw encErr;
+
+  return {
+    blob: new Blob([muxer.target.buffer], { type: "video/mp4" }),
+    frames: frameCount, seconds: frameCount / FPS, hadAudio: !!pcm, W, H
+  };
+}
+
+async function exportMp4() {
+  if (!CAN_MP4) { say("This browser can't build MP4 files. Use the .webm button instead.", "warn"); return; }
+  if (!S.clips.length) { say("Add your clips in step 1 first.", "warn"); return; }
   if (!allTimed()) { say("Finish the timings in step 4 first.", "warn"); return; }
 
-  const FPS = 30;
   const btn = $("btnExportMp4");
   S.recording = true;
   refreshExports();
   startAiClock(btn, "Preparing");
-
-  let venc = null, aenc = null, audioNode = null, audioCtx = null;
+  const wasMuted = video.muted;
   try {
-    const { Muxer, ArrayBufferTarget } = await getMuxer();
-    const codec = await pickH264(W, H, FPS);
-    if (!codec) throw new Error("This browser won't encode H.264 at " + W + "×" + H + ".");
-
-    // Sound first, so the muxer knows whether to expect an audio track.
-    const speaking = S.voMode === "generated" && CAN_SPEAK && $("voice").value !== "";
-    let track = null;
-    if (!speaking) { try { track = stableAudioTrack(master()); } catch (e) {} }
-
-    const AC = window.AudioContext || window.webkitAudioContext;
-    let SR = 48000, CH = 1;
-    if (track) {
-      audioCtx = new AC();
-      SR = audioCtx.sampleRate;
+    const r = await renderMp4();
+    if (!(await opensCleanly(r.blob))) {
+      throw new Error("the finished file would not open");
     }
-
-    const muxer = new Muxer({
-      target: new ArrayBufferTarget(),
-      video: { codec: "avc", width: W, height: H },
-      ...(track ? { audio: { codec: "aac", numberOfChannels: CH, sampleRate: SR } } : {}),
-      fastStart: "in-memory"
-    });
-
-    venc = new VideoEncoder({
-      output: (c, m) => muxer.addVideoChunk(c, m),
-      error: e => { throw e; }
-    });
-    venc.configure({ codec, width: W, height: H, bitrate: 8e6, framerate: FPS });
-
-    let audioSamples = 0;
-    if (track) {
-      aenc = new AudioEncoder({
-        output: (c, m) => muxer.addAudioChunk(c, m),
-        error: e => { throw e; }
-      });
-      aenc.configure({ codec: "mp4a.40.2", numberOfChannels: CH, sampleRate: SR, bitrate: 128000 });
-
-      const src = audioCtx.createMediaStreamSource(new MediaStream([track]));
-      audioNode = audioCtx.createScriptProcessor(4096, 1, 1);
-      audioNode.onaudioprocess = e => {
-        if (!aenc || aenc.state !== "configured") return;
-        const inBuf = e.inputBuffer.getChannelData(0);
-        const copy = new Float32Array(inBuf.length);
-        copy.set(inBuf);
-        const ad = new AudioData({
-          format: "f32-planar", sampleRate: SR, numberOfFrames: copy.length,
-          numberOfChannels: CH, timestamp: Math.round(audioSamples * 1e6 / SR), data: copy
-        });
-        audioSamples += copy.length;
-        try { aenc.encode(ad); } catch (err) {}
-        ad.close();
-      };
-      src.connect(audioNode);
-      audioNode.connect(audioCtx.destination);
-    }
-
-    // Draw into an offscreen canvas at the export size.
-    const rc = document.createElement("canvas");
-    rc.width = W; rc.height = H;
-    const rctx = rc.getContext("2d");
-
-    const dur = totalTime();
-    const cardSecs = endCardSeconds();
-    setAiClockLabel(btn, "Recording");
-
-    pauseAll();
-    seekAll(0);
-    await new Promise(r => setTimeout(r, 200));
-    if (speaking) speakScript(false); else playAll();
-
-    const started = performance.now();
-    let frames = 0, lastT = -1, lastMoved = performance.now(), cardStart = 0;
-
-    await new Promise(resolve => {
-      const step = () => {
-        const t = nowTime();
-        if (Math.abs(t - lastT) > 0.01) { lastT = t; lastMoved = performance.now(); }
-        const stalled = !video.paused && (performance.now() - lastMoved > 1600);
-        const clipDone = t >= dur - 0.04 || stalled ||
-                         (timelineEnded() && (!S.hasAudio || audio.ended));
-
-        if (!clipDone) {
-          advanceClipIfEnded();
-          drawClipFitted(rctx, video, W, H);
-          drawCaptions(rctx, W, H, t);
-          say("Building MP4 — " + Math.min(99, Math.round(t / dur * 100)) + "%");
-        } else if (cardSecs > 0) {
-          if (!cardStart) cardStart = performance.now();
-          const el = (performance.now() - cardStart) / 1000;
-          drawClipFitted(rctx, video, W, H);
-          drawEndCard(rctx, W, H, el / cardSecs);
-          say("Building the end card…");
-          if (el >= cardSecs) return resolve();
-        } else return resolve();
-
-        // one frame per 1/FPS of elapsed wall time, so the file runs at speed
-        const want = Math.floor((performance.now() - started) / 1000 * FPS);
-        if (want > frames) {
-          const ts = Math.round(frames * 1e6 / FPS);
-          const vf = new VideoFrame(rc, { timestamp: ts, duration: Math.round(1e6 / FPS) });
-          try { venc.encode(vf, { keyFrame: frames % 60 === 0 }); } catch (e) {}
-          vf.close();
-          frames++;
-        }
-        if (performance.now() - started > (dur + cardSecs + 25) * 1000) return resolve();
-        requestAnimationFrame(step);
-      };
-      requestAnimationFrame(step);
-    });
-
-    setAiClockLabel(btn, "Finishing");
-    if (audioNode) { try { audioNode.disconnect(); } catch (e) {} audioNode.onaudioprocess = null; }
-    await venc.flush();
-    if (aenc) await aenc.flush();
-    muxer.finalize();
-
-    const blob = new Blob([muxer.target.buffer], { type: "video/mp4" });
-    const ok = await opensCleanly(blob);
-    if (!ok) throw new Error("The MP4 came out unreadable — use the .webm button instead.");
-
-    download(baseName() + "-captioned.mp4", blob);
-    const secs = frames / FPS;
-    say(`Saved ${baseName()}-captioned.mp4 — ${W}×${H}, ${secs.toFixed(1)}s, ` +
-        `${(blob.size / 1048576).toFixed(1)} MB` +
-        (track ? ", with sound." : ", but SILENT — no audio was playing.") +
-        ` Ready to upload to ${plat().label}.`, track ? "ok" : "warn");
+    download(baseName() + "-captioned.mp4", r.blob);
+    say(`Saved ${baseName()}-captioned.mp4 — ${r.W}×${r.H}, ${r.seconds.toFixed(1)}s, ` +
+        `${(r.blob.size / 1048576).toFixed(1)} MB` +
+        (r.hadAudio ? ", with sound." : ", but SILENT — no sound was found in the clips.") +
+        ` Every frame was drawn one at a time, so the start is clean. Ready for ${plat().label}.`,
+        r.hadAudio ? "ok" : "warn");
     stopAiClock(btn, "✅ Saved MP4", 2600);
   } catch (e) {
     stopAiClock(btn);
     say("MP4 export failed: " + (e.message || e) + " — the .webm button still works.", "warn");
   } finally {
-    try { if (venc && venc.state !== "closed") venc.close(); } catch (e) {}
-    try { if (aenc && aenc.state !== "closed") aenc.close(); } catch (e) {}
-    try { if (audioCtx) audioCtx.close(); } catch (e) {}
-    if (speakingNow()) stopSpeaking();
     S.recording = false;
+    video.muted = wasMuted;
     pauseAll();
     refreshExports();
   }
 }
-const speakingNow = () => CAN_SPEAK && (TTS.speaking || TTS.pending);
-if ($("btnExportMp4")) $("btnExportMp4").addEventListener("click", exportMp4);
 
 /* ============================================================
    Burn-in recorder
