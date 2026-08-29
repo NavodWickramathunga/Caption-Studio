@@ -132,6 +132,33 @@
         </div>
         <div class="status" id="voStatus" role="status" aria-live="polite"></div>
         <button id="fitVideo" style="display:none;margin-top:2px">Slow it down to fit the video</button>
+
+        <!-- The voice above is spoken by Windows and cannot be written into a
+             file: the browser gives no way to read it back as sound. That is
+             what forced screen sharing, and what made exports come out silent.
+             This makes a real audio file instead, which gets muxed straight in. -->
+        <div id="aiVoiceBox" class="net-warn" style="display:none;margin-top:14px;background:rgba(91,147,214,.10);border-color:rgba(91,147,214,.35);color:#bcd6f3">
+          <b>Want the voice inside the downloaded video?</b>
+          <p style="margin:6px 0 10px">
+            The voice above is spoken by Windows, and the browser gives no way to read it back —
+            so it can't be written into an MP4, and getting it into a .webm means sharing your
+            screen and hoping. Make it a <b>real audio file</b> instead: it's put straight into
+            the export, every time, with nothing shared.
+          </p>
+          <div class="field">
+            <label for="aiVoice">Narrator</label>
+            <select id="aiVoice"></select>
+          </div>
+          <div class="field" style="margin-top:9px">
+            <label for="aiVoiceStyle">How it should sound <span style="opacity:.7">(optional)</span></label>
+            <input type="text" id="aiVoiceStyle" placeholder="e.g. upbeat and fast, like a friend telling you a secret"
+                   style="width:100%;padding:6px;font-size:12px;background:var(--panel-2);color:white;border:1px solid var(--line);border-radius:4px">
+          </div>
+          <div class="vo-actions" style="margin-top:11px">
+            <button id="btnMakeVoiceFile" class="primary">🎙 Make the voice a real file</button>
+          </div>
+          <div class="status" id="aiVoiceStatus" role="status" aria-live="polite"></div>
+        </div>
       </div>
 
       <!-- load a file -->

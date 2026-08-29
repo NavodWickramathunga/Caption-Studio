@@ -13,6 +13,7 @@ const S = {
   emphasise: false,         // pick out the meaningful words
   keyColor: "#FF8A3D",
   hasAudio: false,          // a voiceover FILE is loaded
+  voiceoverBlob: null,      // that voiceover's bytes, wherever it came from
   voMode: "generated",      // "generated" (spoken here) or "file"
   rate: 1,                  // speaking speed
   spokenDur: 0,             // how long the last spoken run actually took
@@ -379,26 +380,38 @@ $("audioFile").addEventListener("change", e => {
       `That's ${NOT_AUDIO[ext]}, not a voiceover — this needs an audio file (MP3, WAV, M4A) or a video.`;
     $("audioName").classList.add("none");
     e.target.value = "";
-    S.hasAudio = false; video.muted = false;
+    S.hasAudio = false; S.voiceoverBlob = null; video.muted = false;
     syncTransport();
     return;
   }
 
+  useVoiceover(f, f.name);
+});
+
+/* Take a blob as THE voiceover. Shared by the file picker and by the
+   voice generated from your script, so a made voice behaves in every
+   later step exactly like one you loaded yourself — timing, preview,
+   and both exporters all read it from the same place. */
+function useVoiceover(blob, name) {
   if (audioURL) URL.revokeObjectURL(audioURL);
-  audioURL = URL.createObjectURL(f);
+  audioURL = URL.createObjectURL(blob);
   audio.src = audioURL; audio.load();
   S.hasAudio = true; video.muted = true;
-  $("audioName").textContent = f.name;
+  S.clips.forEach(c => { c.el.muted = true; });
+  S.audioFileName = name;
+  S.voiceoverBlob = blob;       // the exporters decode this, not the file input
+  $("audioName").textContent = name;
   $("audioName").classList.remove("none");
   $("clearAudio").style.display = "";
   syncTransport();
-});
+}
 
 $("clearAudio").addEventListener("click", () => {
   pauseAll();
   if (audioURL) { URL.revokeObjectURL(audioURL); audioURL = null; }
   audio.removeAttribute("src"); audio.load();
   S.hasAudio = false; video.muted = false;
+  S.voiceoverBlob = null;
   $("audioFile").value = "";
   $("audioName").textContent = "using the video's own audio";
   $("audioName").classList.add("none");
@@ -1890,33 +1903,141 @@ function seekElement(el, t) {
       el.removeEventListener("seeked", onSeeked);
       resolve();
     };
-    /* 'seeked' can fire before there is a frame to paint, so wait for the
-       element to actually hold current data before drawing it. */
+    /* 'seeked' can fire before there is a frame to paint, and readyState
+       only says data has arrived — not that the decoder has handed over a
+       picture. requestVideoFrameCallback fires exactly when a frame is
+       presentable, which is the signal we actually want; readyState is the
+       fallback for browsers that do not have it. */
     const whenReady = (tries = 0) => {
-      if (el.readyState >= 2 || tries > 20) return finish();
+      if (typeof el.requestVideoFrameCallback === "function") {
+        el.requestVideoFrameCallback(() => finish());
+        return;
+      }
+      if (el.readyState >= 2 || tries > 40) return finish();
       setTimeout(() => whenReady(tries + 1), 15);
     };
     const onSeeked = () => whenReady();
     if (Math.abs(el.currentTime - t) < 0.001 && el.readyState >= 2) return finish();
     el.addEventListener("seeked", onSeeked);
     try { el.currentTime = t; } catch (e) { return finish(); }
-    setTimeout(finish, 700);      // never hang on a clip that will not seek
+    setTimeout(finish, 1200);     // never hang on a clip that will not seek
   });
 }
 
-/* Is anything actually painted here, or is it an empty frame? */
+/* Is anything actually painted here, or is it an empty frame?
+
+   This used to read only the top 200 rows and ask for a bright average,
+   which called a letterboxed clip — black bars across the top — empty and
+   refused to render it. A clip that simply opens on a dark shot was thrown
+   out the same way. So read the whole frame, and accept it if ANY pixel is
+   clearly not black: one lit pixel proves the decoder delivered. */
 function canvasHasPicture(ctx, W, H) {
-  const step = Math.max(1, Math.floor(W / 24));
-  const d = ctx.getImageData(0, 0, W, Math.min(H, 200)).data;
-  let sum = 0, n = 0;
-  for (let i = 0; i < d.length; i += 4 * step) { sum += d[i] + d[i + 1] + d[i + 2]; n++; }
-  return n ? (sum / n / 3) > 6 : false;
+  let d;
+  try { d = ctx.getImageData(0, 0, W, H).data; }
+  catch (e) { return true; }          // can't look — don't block the render
+  const step = 4 * Math.max(1, Math.floor((W * H) / 20000));
+  let sum = 0, n = 0, max = 0;
+  for (let i = 0; i < d.length; i += step) {
+    const v = (d[i] + d[i + 1] + d[i + 2]) / 3;
+    sum += v; n++;
+    if (v > max) max = v;
+  }
+  if (!n) return false;
+  return max > 24 || (sum / n) > 2;
+}
+
+/* ============================================================
+   A voice spoken by the browser exists only while it is speaking - there
+   is no file to read it from. So record it once, up front, and hand the
+   samples to the renderer. One pass of listening, then the picture is
+   built frame by frame around it.
+   ============================================================ */
+async function captureSpokenAudio(onProgress) {
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) throw new Error("No audio support in this browser.");
+
+  const ok = window.confirm(
+    "Your voice is spoken by the browser, so it has to be recorded before the video can be built.\n\n" +
+    "In the box that appears:\n" +
+    "  1. Choose ENTIRE SCREEN  (not the tab — tab audio records silence)\n" +
+    "  2. Tick “Also share system audio”\n" +
+    "  3. Press Share\n\n" +
+    "Only the sound is kept; the screen picture is thrown away. It takes about\n" +
+    "as long as your script to read out, then the video is rendered.\n\n" +
+    "Press OK to continue."
+  );
+  if (!ok) throw new Error("cancelled");
+
+  const ds = await navigator.mediaDevices.getDisplayMedia({
+    video: true, audio: true, systemAudio: "include"
+  });
+  ds.getVideoTracks().forEach(t => t.stop());
+  const tracks = ds.getAudioTracks();
+  if (!tracks.length) {
+    ds.getTracks().forEach(t => t.stop());
+    throw new Error("no sound was shared — “Also share system audio” wasn't ticked");
+  }
+
+  const ac = new AC();
+  const src = ac.createMediaStreamSource(new MediaStream([tracks[0]]));
+  const proc = ac.createScriptProcessor(4096, 1, 1);
+  const chunks = [];
+  let peak = 0;
+  proc.onaudioprocess = e => {
+    const inBuf = e.inputBuffer.getChannelData(0);
+    const copy = new Float32Array(inBuf.length);
+    copy.set(inBuf);
+    for (let i = 0; i < copy.length; i += 7) { const v = Math.abs(copy[i]); if (v > peak) peak = v; }
+    chunks.push(copy);
+  };
+  src.connect(proc);
+  proc.connect(ac.destination);
+
+  try {
+    await new Promise((resolve, reject) => {
+      const u = new SpeechSynthesisUtterance(scriptEl.value.trim());
+      u.voice = voices[+$("voice").value];
+      u.rate = S.rate;
+      u.onend = resolve;
+      u.onerror = e => reject(new Error("the voice stopped: " + e.error));
+      TTS.cancel();
+      TTS.speak(u);
+      const started = performance.now();
+      const tick = setInterval(() => {
+        const secs = (performance.now() - started) / 1000;
+        if (onProgress) onProgress(secs, peak);
+        if (!TTS.speaking && !TTS.pending && secs > 1) { clearInterval(tick); resolve(); }
+        if (secs > 600) { clearInterval(tick); resolve(); }
+      }, 250);
+    });
+  } finally {
+    try { proc.disconnect(); src.disconnect(); } catch (e) {}
+    proc.onaudioprocess = null;
+    ds.getTracks().forEach(t => t.stop());
+  }
+
+  const total = chunks.reduce((a, c) => a + c.length, 0);
+  const joined = new Float32Array(total);
+  let at = 0;
+  chunks.forEach(c => { joined.set(c, at); at += c.length; });
+  const rate = ac.sampleRate;
+  try { ac.close(); } catch (e) {}
+
+  if (peak < 0.02) {
+    throw new Error("nothing was captured (level " + (peak * 100).toFixed(1) + "%) — " +
+                    "you most likely shared a tab or window instead of Entire Screen");
+  }
+  return { pcm: joined, sampleRate: rate, seconds: total / rate, peak };
 }
 
 /* The whole soundtrack, decoded up front at full quality, so the audio
    does not depend on anything happening in real time. */
 async function gatherExportAudio(sr) {
-  const voiceover = $("audioFile").files && $("audioFile").files[0];
+  /* S.voiceoverBlob, not the file input: a voice generated from the script
+     never passes through a file picker, and reading only the input is what
+     left those exports silent. */
+  const voiceover = S.voiceoverBlob ||
+                    ($("audioFile").files && $("audioFile").files[0]);
   if (S.hasAudio && voiceover) {
     try { return await decodeMono(voiceover, sr); } catch (e) { return null; }
   }
@@ -1952,20 +2073,41 @@ async function renderMp4() {
   const FPS = 30, SR = 48000, CH = 1;
   const dur = totalTime();
   const cardSecs = endCardSeconds();
-  const frameCount = Math.max(1, Math.round((dur + cardSecs) * FPS));
   const btn = $("btnExportMp4");
+  let frameCount = Math.max(1, Math.round((dur + cardSecs) * FPS));
 
   const { Muxer, ArrayBufferTarget } = await getMuxer();
   const codec = await pickH264(W, H, FPS);
   if (!codec) throw new Error("This browser won't encode H.264 at " + W + "×" + H + ".");
 
-  setAiClockLabel(btn, "Reading the sound");
-  const pcm = await gatherExportAudio(SR);
+  /* Where the sound comes from depends on which voice is in use. A spoken
+     voice has to be recorded first; a file or a clip's own audio can just
+     be read. Either way the renderer receives plain samples. */
+  const speaking = S.voMode === "generated" && CAN_SPEAK && $("voice").value !== "";
+  let pcm = null, audioRate = SR;
+
+  if (speaking) {
+    setAiClockLabel(btn, "Recording the voice");
+    const cap = await captureSpokenAudio((secs, peak) => {
+      say(`Recording the voice — ${secs.toFixed(0)}s, level ${(peak * 100).toFixed(0)}%…`);
+    });
+    pcm = cap.pcm;
+    audioRate = cap.sampleRate;
+    // Never cut the voice off: if it ran past the clips, hold the last
+    // frame for the remainder rather than ending mid-sentence.
+    if (cap.seconds > dur + cardSecs + 0.1) {
+      frameCount = Math.round(cap.seconds * FPS);
+    }
+    say(`Captured ${cap.seconds.toFixed(1)}s of voice. Now building the picture…`);
+  } else {
+    setAiClockLabel(btn, "Reading the sound");
+    pcm = await gatherExportAudio(SR);
+  }
 
   const muxer = new Muxer({
     target: new ArrayBufferTarget(),
     video: { codec: "avc", width: W, height: H },
-    ...(pcm ? { audio: { codec: "aac", numberOfChannels: CH, sampleRate: SR } } : {}),
+    ...(pcm ? { audio: { codec: "aac", numberOfChannels: CH, sampleRate: audioRate } } : {}),
     fastStart: "in-memory"
   });
 
@@ -1982,7 +2124,7 @@ async function renderMp4() {
       output: (c, m) => muxer.addAudioChunk(c, m),
       error: e => { encErr = e; }
     });
-    aenc.configure({ codec: "mp4a.40.2", numberOfChannels: CH, sampleRate: SR, bitrate: 128000 });
+    aenc.configure({ codec: "mp4a.40.2", numberOfChannels: CH, sampleRate: audioRate, bitrate: 128000 });
   }
 
   const rc = document.createElement("canvas");
@@ -2046,14 +2188,14 @@ async function renderMp4() {
   if (pcm && aenc) {
     setAiClockLabel(btn, "Adding the sound");
     const CHUNK = 4096;
-    const wanted = Math.min(pcm.length, Math.round((dur + cardSecs) * SR));
+    const wanted = pcm.length;   // keep the whole voice, however long it ran
     for (let off = 0; off < wanted; off += CHUNK) {
       const n = Math.min(CHUNK, wanted - off);
       const slice = new Float32Array(n);
       slice.set(pcm.subarray(off, off + n));
       const ad = new AudioData({
-        format: "f32-planar", sampleRate: SR, numberOfFrames: n,
-        numberOfChannels: CH, timestamp: Math.round(off * 1e6 / SR), data: slice
+        format: "f32-planar", sampleRate: audioRate, numberOfFrames: n,
+        numberOfChannels: CH, timestamp: Math.round(off * 1e6 / audioRate), data: slice
       });
       aenc.encode(ad);
       ad.close();
@@ -2080,6 +2222,28 @@ async function exportMp4() {
   if (!S.clips.length) { say("Add your clips in step 1 first.", "warn"); return; }
   if (!allTimed()) { say("Finish the timings in step 4 first.", "warn"); return; }
 
+  /* The MP4 is built from decoded audio, and a voice spoken by the browser
+     produces no audio to decode — there is no way to read it back. Say that
+     BEFORE the render rather than after, because "SILENT" arriving at the
+     end of a full render reads as a bug and costs the whole wait. */
+  if (S.voMode === "generated" && CAN_SPEAK && $("voice").value !== "") {
+    const go = window.confirm(
+      "The MP4 cannot carry a voice spoken by the browser.\n\n" +
+      "The browser gives no way to read that speech back as sound, so this\n" +
+      "MP4 will contain your clips' own audio only — and nothing at all if\n" +
+      "the clips are silent.\n\n" +
+      "To get the voice into the file, press “🎙 Make the voice a real file”\n" +
+      "in step 2 first. It speaks your script into an actual audio file, which\n" +
+      "is written straight into the MP4 — no screen sharing, every time.\n\n" +
+      "Press OK to render a silent MP4 anyway, or Cancel to go back."
+    );
+    if (!go) {
+      say("MP4 export cancelled. Press “🎙 Make the voice a real file” in step 2, " +
+          "then export again — the voice will be in the file.", "warn");
+      return;
+    }
+  }
+
   const btn = $("btnExportMp4");
   S.recording = true;
   refreshExports();
@@ -2093,7 +2257,10 @@ async function exportMp4() {
     download(baseName() + "-captioned.mp4", r.blob);
     say(`Saved ${baseName()}-captioned.mp4 — ${r.W}×${r.H}, ${r.seconds.toFixed(1)}s, ` +
         `${(r.blob.size / 1048576).toFixed(1)} MB` +
-        (r.hadAudio ? ", with sound." : ", but SILENT — no sound was found in the clips.") +
+        (r.hadAudio ? ", with sound."
+                    : (S.voMode === "generated"
+                       ? ", but SILENT — a browser-spoken voice can't be written into an MP4."
+                       : ", but SILENT — no sound was found in the clips.")) +
         ` Every frame was drawn one at a time, so the start is clean. Ready for ${plat().label}.`,
         r.hadAudio ? "ok" : "warn");
     stopAiClock(btn, "✅ Saved MP4", 2600);
@@ -2150,7 +2317,11 @@ async function burnIn() {
     // own audio — which the browser will ask you to allow. Say what to tick
     // before the box appears, because getting it wrong costs a whole render.
     const ok = window.confirm(
-      "To put the voice inside the video, the browser has to record the sound.\n\n" +
+      "There is now a better way: press “🎙 Make the voice a real file” in step 2.\n" +
+      "That turns your script into an actual audio file, which goes straight into\n" +
+      "the export — MP4 included — with nothing shared. Cancel and use that if you can.\n\n" +
+      "Otherwise: to put a Windows-spoken voice inside the video, the browser has to\n" +
+      "record the sound off your screen.\n\n" +
       "In the box that appears next:\n" +
       "  1. Choose ENTIRE SCREEN  (not the tab — tab audio records silence)\n" +
       "  2. Tick “Also share system audio”  ← without this the video is silent\n" +
@@ -2261,6 +2432,17 @@ async function burnIn() {
   const cardSecs = endCardSeconds();
   let cardStart = 0;              // wall-clock ms when the end card began
 
+  /* requestAnimationFrame stops dead while the tab is hidden — and picking
+     "Entire Screen" in the share box is exactly what sends this tab to the
+     background. The whole loop lives here, the stop condition included, so
+     a hidden tab meant a frozen picture and a recording that never ended.
+     Fall back to a timer whenever the tab is not visible: a page holding a
+     capture stream is exempt from Chrome's background timer clamp. */
+  const schedule = fn => {
+    if (document.hidden) setTimeout(fn, 33);
+    else requestAnimationFrame(fn);
+  };
+
   let lastT = -1, lastMoved = performance.now();
   const tick = () => {
     if (levelMeter) levelMeter.sample();
@@ -2295,9 +2477,9 @@ async function burnIn() {
 
     // backstop: never spin forever if the voice fails to start at all
     if (performance.now() - wallStart > (dur + cardSecs + 20) * 1000) { rec.stop(); return; }
-    requestAnimationFrame(tick);
+    schedule(tick);
   };
-  requestAnimationFrame(tick);
+  schedule(tick);
 }
 
 /* ============================================================
@@ -3347,9 +3529,11 @@ async function testVoiceCapture() {
           `Share the same way when you record.`, "ok");
     } else {
       say(`Silent — nothing was captured (level ${(peak * 100).toFixed(1)}%). ` +
-          `You most likely shared a tab or a window. Run this again and pick ` +
-          `“Entire Screen”, then tick “Also share system audio”. ` +
-          `Also check your speakers aren't muted — the sound has to be playing to be recorded.`, "warn");
+          `Usually that means a tab or a window was shared instead of “Entire Screen”, ` +
+          `or the speakers are muted — the sound has to be playing to be recorded. ` +
+          `Rather than fight this: press “🎙 Make the voice a real file” in step 2. ` +
+          `It turns your script into an actual audio file, which goes straight into ` +
+          `the export — MP4 included — with nothing shared and nothing to tick.`, "warn");
     }
   } catch (e) {
     const why = String((e && e.message) || e);
@@ -3453,6 +3637,136 @@ function stopAiClock(btn, doneLabel, holdMs) {
     btn.disabled = false;
   }
 }
+/* ============================================================
+   Making the voiceover a real file.
+
+   A voice spoken by the browser exists only while it is playing. There is
+   no way to read it back as sound, which is why getting it into an export
+   meant sharing the whole screen and trusting two checkboxes — and why a
+   render so often came back silent. Synthesising the script instead returns
+   actual samples, so the exporter writes them straight in. Nothing shared,
+   nothing to get wrong, and the MP4 can carry the voice at last.
+   ============================================================ */
+const TTS_MODEL = "gemini-2.5-flash-preview-tts";
+const TTS_VOICES = [
+  { id: "Kore",       label: "Aria — warm and steady (female)" },
+  { id: "Leda",       label: "Leda — bright and youthful (female)" },
+  { id: "Aoede",      label: "Aoede — breezy and upbeat (female)" },
+  { id: "Callirrhoe", label: "Callie — soft and easy (female)" },
+  { id: "Puck",       label: "Puck — lively and playful (male)" },
+  { id: "Charon",     label: "Charon — deep and informative (male)" },
+  { id: "Fenrir",     label: "Fenrir — punchy and excitable (male)" },
+  { id: "Orus",       label: "Orus — firm and confident (male)" }
+];
+
+function setAiVoiceStatus(msg, kind) {
+  const el = $("aiVoiceStatus");
+  if (!el) return;
+  el.className = "status" + (kind ? " " + kind : "");
+  el.textContent = msg;
+}
+
+/* The model returns headerless 16-bit PCM, which no browser will decode.
+   Wrap it in the 44-byte WAV header they all understand. */
+function pcmToWavBlob(pcm, sampleRate) {
+  const buf = new ArrayBuffer(44 + pcm.byteLength);
+  const dv = new DataView(buf);
+  const str = (at, s) => { for (let i = 0; i < s.length; i++) dv.setUint8(at + i, s.charCodeAt(i)); };
+  str(0, "RIFF");
+  dv.setUint32(4, 36 + pcm.byteLength, true);
+  str(8, "WAVE");
+  str(12, "fmt ");
+  dv.setUint32(16, 16, true);          // PCM chunk size
+  dv.setUint16(20, 1, true);           // format: PCM
+  dv.setUint16(22, 1, true);           // mono
+  dv.setUint32(24, sampleRate, true);
+  dv.setUint32(28, sampleRate * 2, true);
+  dv.setUint16(32, 2, true);           // block align
+  dv.setUint16(34, 16, true);          // bits per sample
+  str(36, "data");
+  dv.setUint32(40, pcm.byteLength, true);
+  new Uint8Array(buf, 44).set(pcm);
+  return new Blob([buf], { type: "audio/wav" });
+}
+
+async function makeVoiceFile() {
+  const btn = $("btnMakeVoiceFile");
+  const text = scriptEl.value.trim();
+  if (!text) { setAiVoiceStatus("Paste your script in step 3 first — that's what gets spoken.", "warn"); return; }
+  if (text.length > 5000) {
+    setAiVoiceStatus("That script is too long to speak in one go — keep it under 5000 characters.", "warn");
+    return;
+  }
+  const apiKey = getApiKey();
+  if (!apiKey) { $("apiKeyModal").classList.add("open"); return; }
+
+  const voice = $("aiVoice").value || "Kore";
+  const style = ($("aiVoiceStyle").value || "").trim();
+
+  startAiClock(btn, "Speaking your script");
+  setAiVoiceStatus("");
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort("timeout"), 120000);
+  try {
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${TTS_MODEL}:generateContent?key=${apiKey}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: ctrl.signal,
+        body: JSON.stringify({
+          contents: [{ role: "user", parts: [{ text: style ? `${style}: ${text}` : text }] }],
+          generationConfig: {
+            responseModalities: ["AUDIO"],
+            speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } }
+          }
+        })
+      }
+    );
+    if (!res.ok) {
+      const msg = (await res.json().catch(() => ({}))).error?.message || `HTTP ${res.status}`;
+      throw new Error(/quota|billing/i.test(msg)
+        ? "Google refused the request — the key has no quota left for the voice model."
+        : msg);
+    }
+    const data = await res.json();
+    const part = (data.candidates?.[0]?.content?.parts || []).find(p => p.inlineData?.data);
+    if (!part) throw new Error("No sound came back. Try a shorter script, or a different narrator.");
+
+    /* The rate rides in the mime type (audio/L16;codec=pcm;rate=24000).
+       Read it rather than assuming — a wrong rate plays at the wrong pitch. */
+    const rate = parseInt((part.inlineData.mimeType || "").match(/rate=(\d+)/)?.[1], 10) || 24000;
+    const bin = atob(part.inlineData.data);
+    const pcm = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) pcm[i] = bin.charCodeAt(i);
+    const wav = pcmToWavBlob(pcm, rate);
+
+    // Hand it over as THE voiceover, then switch to the tab that shows it,
+    // so what happens next is visible rather than silently rearranged.
+    useVoiceover(wav, "voice-" + voice.toLowerCase() + ".wav");
+    setMode("file");
+    stopAiClock(btn, "✅ Voice made", 2600);
+    say(`Voice made — ${(wav.size / 1048576).toFixed(1)} MB, ${rate / 1000} kHz. ` +
+        `It's loaded as your voiceover, so the MP4 will carry it. ` +
+        `Time it in step 4, then export — no screen sharing needed.`, "ok");
+  } catch (e) {
+    stopAiClock(btn);
+    const why = String((e && e.message) || e);
+    setAiVoiceStatus(/abort|timeout/i.test(why)
+      ? "Google didn't answer within two minutes. Try a shorter script."
+      : why, "warn");
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+if ($("aiVoice")) {
+  $("aiVoice").innerHTML = TTS_VOICES
+    .map(v => `<option value="${v.id}">${v.label}</option>`).join("");
+  $("aiVoiceBox").style.display = "";
+  $("btnMakeVoiceFile").addEventListener("click", makeVoiceFile);
+}
+
 if ($("btnGenerate")) {
   $("btnGenerate").addEventListener("click", async () => {
     const topic = $("topicInput").value.trim();

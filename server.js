@@ -213,6 +213,95 @@ ${script}`;
   }
 });
 
+/* ============================================================
+   The voiceover, as real sound.
+
+   A voice spoken by the browser exists only as playback — there is no way
+   to read it back as samples. That is the whole reason putting the voice
+   into an export meant sharing the screen and hoping the right boxes were
+   ticked. Synthesising it here returns actual audio, so the exporter can
+   mux it straight in and the screen never has to be shared at all.
+   ============================================================ */
+
+/* The voices worth offering, in plain words rather than star names. */
+const TTS_VOICES = [
+  { id: "Kore",      label: "Aria — warm, steady (female)" },
+  { id: "Leda",      label: "Leda — bright, youthful (female)" },
+  { id: "Aoede",     label: "Aoede — breezy, upbeat (female)" },
+  { id: "Callirrhoe",label: "Callie — soft, easy (female)" },
+  { id: "Puck",      label: "Puck — lively, playful (male)" },
+  { id: "Charon",    label: "Charon — deep, informative (male)" },
+  { id: "Fenrir",    label: "Fenrir — punchy, excitable (male)" },
+  { id: "Orus",      label: "Orus — firm, confident (male)" }
+];
+
+app.get('/api/tts/voices', (req, res) => {
+  res.json({ ok: !!ai, voices: TTS_VOICES });
+});
+
+/* Gemini hands back headerless 16-bit PCM. Browsers will not decode that,
+   so wrap it in the 44-byte WAV header they do understand. */
+function pcmToWav(pcm, sampleRate, channels) {
+  const bytesPerSample = 2;
+  const blockAlign = channels * bytesPerSample;
+  const head = Buffer.alloc(44);
+  head.write('RIFF', 0);
+  head.writeUInt32LE(36 + pcm.length, 4);
+  head.write('WAVE', 8);
+  head.write('fmt ', 12);
+  head.writeUInt32LE(16, 16);            // PCM chunk size
+  head.writeUInt16LE(1, 20);             // format: PCM
+  head.writeUInt16LE(channels, 22);
+  head.writeUInt32LE(sampleRate, 24);
+  head.writeUInt32LE(sampleRate * blockAlign, 28);
+  head.writeUInt16LE(blockAlign, 32);
+  head.writeUInt16LE(8 * bytesPerSample, 34);
+  head.write('data', 36);
+  head.writeUInt32LE(pcm.length, 40);
+  return Buffer.concat([head, pcm]);
+}
+
+app.post('/api/tts', express.json(), async (req, res) => {
+  if (!ai) return res.status(500).json({ error: "GEMINI_API_KEY not configured on server" });
+
+  const script = String(req.body.script || "").trim();
+  if (!script) return res.status(400).json({ error: "No script provided" });
+  /* One request is one render's worth of speech. Well past any short-form
+     script, and short enough that a runaway paste cannot bill for a novel. */
+  if (script.length > 5000) {
+    return res.status(400).json({ error: "That script is too long to speak in one go — keep it under 5000 characters." });
+  }
+
+  const voice = TTS_VOICES.some(v => v.id === req.body.voice) ? req.body.voice : "Kore";
+  const style = String(req.body.style || "").trim();
+
+  try {
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash-preview-tts",
+      contents: [{ role: 'user', parts: [{ text: style ? `${style}: ${script}` : script }] }],
+      config: {
+        responseModalities: ['AUDIO'],
+        speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } }
+      }
+    });
+
+    const part = response.candidates?.[0]?.content?.parts?.find(p => p.inlineData?.data);
+    if (!part) throw new Error("The model returned no audio.");
+
+    /* The mime type carries the rate, e.g. audio/L16;codec=pcm;rate=24000.
+       Read it rather than assuming — a wrong rate plays at the wrong pitch. */
+    const rate = parseInt((part.inlineData.mimeType || "").match(/rate=(\d+)/)?.[1], 10) || 24000;
+    const wav = pcmToWav(Buffer.from(part.inlineData.data, 'base64'), rate, 1);
+
+    res.set('Content-Type', 'audio/wav');
+    res.set('Content-Length', String(wav.length));
+    res.send(wav);
+  } catch (err) {
+    console.error("TTS error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('*', (req, res) => {
   if (req.url === '/voice-match') return res.sendFile(path.join(__dirname, 'voice-match.html'));
   res.sendFile(path.join(__dirname, 'index.html'));
