@@ -21,3 +21,7 @@ _spent/
 
 # npm packages - never belong in the repo
 node_modules/
+
+# Secrets - the key lives here and must never be committed
+.env
+.env.local
