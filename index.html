@@ -1,3 +1,4 @@
+<!DOCTYPE html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Caption Studio</title>
@@ -7,12 +8,24 @@
 <link rel="stylesheet" href="style.css">
 
 <div class="app">
+<div class="chrome">
 <div class="topbar">
   <h1>Caption <em>Studio</em></h1>
   <p>Karaoke captions for vertical clips — tapped in by hand or powered by AI.</p>
   <button id="autoSaveBadge" class="api-key-btn" style="display:none;" title="Session restored from auto-save. Click to clear.">💾 Auto-Saved <span style="font-size:10px; opacity:0.8;">✕</span></button>
   <button id="apiKeyBtn" class="api-key-btn">🔑 Gemini Key</button>
   <div class="privacy">Runs offline · 100% Client-Side</div>
+</div>
+
+<!-- Five steps in the order they have to happen. The voice must exist before
+     the timing is taken, or the captions drift against it. -->
+<nav class="steprail" id="stepRail" aria-label="Steps">
+  <a href="#step1" data-step="step1"><i>1</i><span>Clips</span></a>
+  <a href="#step2" data-step="step2"><i>2</i><span>Voiceover</span></a>
+  <a href="#step3" data-step="step3"><i>3</i><span>Script</span></a>
+  <a href="#step4" data-step="step4"><i>4</i><span>Timing</span></a>
+  <a href="#step5" data-step="step5"><i>5</i><span>Export</span></a>
+</nav>
 </div>
 
 <main>
@@ -50,7 +63,7 @@
   <!-- ============ STEPS ============ -->
   <div class="steps">
 
-    <section class="step">
+    <section class="step" id="step1">
       <h2><i>1</i>Choose your clips</h2>
       <p class="hint">One clip, or several to be joined end to end. Drop them in below, or pick
         them from disk. Nothing leaves this machine.</p>
@@ -69,7 +82,7 @@
          background:rgba(224,179,65,.10);border:1px solid rgba(224,179,65,.35);color:#e8cf94;font-size:12.5px"></p>
     </section>
 
-    <section class="step">
+    <section class="step" id="step2">
       <h2><i>2</i>Your voiceover</h2>
 
       <div class="seg" role="tablist" aria-label="Where the voiceover comes from">
@@ -177,7 +190,7 @@
       </div>
     </section>
 
-    <section class="step">
+    <section class="step" id="step3">
       <h2><i>3</i>Paste your script</h2>
       <p class="hint">Plain text. Punctuation is dropped from the captions, word order is kept exactly.</p>
       
@@ -199,7 +212,7 @@
 </main>
 
 <!-- ============ TAP STRIP ============ -->
-<section class="tapzone">
+<section class="tapzone" id="step4">
   <div class="tapbar">
     <h2><i>4</i>Check the timings</h2>
     <button id="btnAutoTime" class="primary" style="font-size:11px; padding:5px 10px; margin-left:10px; border-radius:6px; cursor:pointer;" title="Listens to the audio on this machine and times every word. No key, no internet.">⏱ Time it for me</button>
@@ -259,7 +272,7 @@
 </section>
 
 <!-- ============ EXPORT SECTION ============ -->
-<section class="tapzone" style="margin-top:0;">
+<section class="tapzone" id="step5">
   <div class="tapbar">
     <h2><i>5</i>Save your work</h2>
   </div>
@@ -367,4 +380,5 @@
 </div>
 
 <script src="script.js" type="module"></script>
+<script src="ui.js"></script>
 
