@@ -3225,9 +3225,16 @@ async function decodeMono(file, sr) {
    so a joined timeline is timed as one piece. */
 async function gatherTimingAudio() {
   const SR = 16000;
-  const voiceover = $("audioFile").files && $("audioFile").files[0];
+  /* S.voiceoverBlob, not the file input — the same trap that once left
+     exports silent, and here it was worse than silence. A voice made from
+     your script never touches a file picker, so this read nothing, fell
+     through to the clips, and timed the words against the video's own
+     soundtrack. The export then muxed in the voiceover instead, and the
+     captions ran against a recording they had never heard. */
+  const voiceover = S.voiceoverBlob ||
+                    ($("audioFile").files && $("audioFile").files[0]);
   if (S.hasAudio && voiceover) {
-    return { pcm: await decodeMono(voiceover, SR), sr: SR, from: "your voiceover file" };
+    return { pcm: await decodeMono(voiceover, SR), sr: SR, from: "your voiceover" };
   }
   if (S.clips.length) {
     const parts = [];
@@ -3295,7 +3302,8 @@ async function gatherTimingWav(maxSeconds) {
 
 /* Is there anything to listen to at all? */
 function haveTimingSource() {
-  return S.clips.length > 0 || (S.hasAudio && $("audioFile").files[0]);
+  return S.clips.length > 0 ||
+         (S.hasAudio && (S.voiceoverBlob || $("audioFile").files[0]));
 }
 
 async function autoTimeFromAudio() {
@@ -3872,9 +3880,18 @@ async function makeVoiceFile() {
     useVoiceover(wav, "voice-" + voice.toLowerCase() + ".wav");
     setMode("file");
     stopAiClock(btn, "✅ Voice made", 2600);
+    /* Any timing from before this voice existed was taken against a
+       different reading — a tap-along, or the browser speaking at its own
+       pace. Saying nothing is how captions end up drifting against a
+       voiceover that sounds fine on its own. */
+    const stale = S.words.some(w => w.start !== null);
     say(`Voice made — ${(wav.size / 1048576).toFixed(1)} MB, ${rate / 1000} kHz. ` +
         `It's loaded as your voiceover, so the MP4 will carry it. ` +
-        `Time it in step 4, then export — no screen sharing needed.`, "ok");
+        (stale
+          ? `Your word timings were taken against a different reading, so they no longer ` +
+            `match — re-time them in step 4 before exporting, or the captions will drift.`
+          : `Time it in step 4, then export — no screen sharing needed.`),
+        stale ? "warn" : "ok");
   } catch (e) {
     stopAiClock(btn);
     const why = String((e && e.message) || e);
