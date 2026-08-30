@@ -153,6 +153,9 @@
             <label for="aiVoiceStyle">How it should sound <span style="opacity:.7">(optional)</span></label>
             <input type="text" id="aiVoiceStyle" placeholder="e.g. upbeat and fast, like a friend telling you a secret"
                    style="width:100%;padding:6px;font-size:12px;background:var(--panel-2);color:white;border:1px solid var(--line);border-radius:4px">
+            <!-- Presets, because a blank box asking how a voice should sound is
+                 the kind of question most people skip rather than answer. -->
+            <div class="stylechips" id="aiVoiceStyles"></div>
           </div>
           <div class="vo-actions" style="margin-top:11px">
             <button id="btnMakeVoiceFile" class="primary">🎙 Make the voice a real file</button>

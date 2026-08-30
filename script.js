@@ -3749,15 +3749,40 @@ function stopAiClock(btn, doneLabel, holdMs) {
    nothing to get wrong, and the MP4 can carry the voice at last.
    ============================================================ */
 const TTS_MODEL = "gemini-2.5-flash-preview-tts";
+/* The first eight earned their place by sounding right on short-form. The rest
+   are everything else the model offers, carrying Google's own one-word descriptor
+   rather than a gender I would only be guessing at. */
 const TTS_VOICES = [
-  { id: "Kore",       label: "Aria — warm and steady (female)" },
-  { id: "Leda",       label: "Leda — bright and youthful (female)" },
-  { id: "Aoede",      label: "Aoede — breezy and upbeat (female)" },
-  { id: "Callirrhoe", label: "Callie — soft and easy (female)" },
-  { id: "Puck",       label: "Puck — lively and playful (male)" },
-  { id: "Charon",     label: "Charon — deep and informative (male)" },
-  { id: "Fenrir",     label: "Fenrir — punchy and excitable (male)" },
-  { id: "Orus",       label: "Orus — firm and confident (male)" }
+  { id: "Kore",          label: "Aria — warm and steady (female)", group: "Suggested" },
+  { id: "Leda",          label: "Leda — bright and youthful (female)", group: "Suggested" },
+  { id: "Aoede",         label: "Aoede — breezy and upbeat (female)", group: "Suggested" },
+  { id: "Callirrhoe",    label: "Callie — soft and easy (female)", group: "Suggested" },
+  { id: "Puck",          label: "Puck — lively and playful (male)", group: "Suggested" },
+  { id: "Charon",        label: "Charon — deep and informative (male)", group: "Suggested" },
+  { id: "Fenrir",        label: "Fenrir — punchy and excitable (male)", group: "Suggested" },
+  { id: "Orus",          label: "Orus — firm and confident (male)", group: "Suggested" },
+  { id: "Zephyr",        label: "Zephyr — bright",                 group: "More voices" },
+  { id: "Autonoe",       label: "Autonoe — bright",                group: "More voices" },
+  { id: "Enceladus",     label: "Enceladus — breathy",             group: "More voices" },
+  { id: "Iapetus",       label: "Iapetus — clear",                 group: "More voices" },
+  { id: "Erinome",       label: "Erinome — clear",                 group: "More voices" },
+  { id: "Umbriel",       label: "Umbriel — easy-going",            group: "More voices" },
+  { id: "Algieba",       label: "Algieba — smooth",                group: "More voices" },
+  { id: "Despina",       label: "Despina — smooth",                group: "More voices" },
+  { id: "Algenib",       label: "Algenib — gravelly",              group: "More voices" },
+  { id: "Rasalgethi",    label: "Rasalgethi — informative",        group: "More voices" },
+  { id: "Laomedeia",     label: "Laomedeia — upbeat",              group: "More voices" },
+  { id: "Achernar",      label: "Achernar — soft",                 group: "More voices" },
+  { id: "Alnilam",       label: "Alnilam — firm",                  group: "More voices" },
+  { id: "Schedar",       label: "Schedar — even",                  group: "More voices" },
+  { id: "Gacrux",        label: "Gacrux — mature",                 group: "More voices" },
+  { id: "Pulcherrima",   label: "Pulcherrima — forward",           group: "More voices" },
+  { id: "Achird",        label: "Achird — friendly",               group: "More voices" },
+  { id: "Zubenelgenubi", label: "Zubenelgenubi — casual",          group: "More voices" },
+  { id: "Vindemiatrix",  label: "Vindemiatrix — gentle",           group: "More voices" },
+  { id: "Sadachbia",     label: "Sadachbia — lively",              group: "More voices" },
+  { id: "Sadaltager",    label: "Sadaltager — knowledgeable",      group: "More voices" },
+  { id: "Sulafat",       label: "Sulafat — warm",                  group: "More voices" },
 ];
 
 function setAiVoiceStatus(msg, kind) {
@@ -3861,11 +3886,51 @@ async function makeVoiceFile() {
   }
 }
 
+/* Writing a delivery note from scratch is the blank page that stops people
+   using the field at all. These five are the reads that actually change how
+   short-form lands, and the text stays editable once one is dropped in. */
+const VOICE_STYLES = [
+  { name: "Upbeat hook",    text: "excited and fast, like you're revealing a secret" },
+  { name: "Calm explainer", text: "calm and clear, unhurried, like explaining it to a friend" },
+  { name: "Urgent",         text: "urgent and intense, low and serious" },
+  { name: "Storyteller",    text: "warm and unhurried, like telling a story" },
+  { name: "Deadpan",        text: "flat and deadpan, completely straight-faced" }
+];
+
 if ($("aiVoice")) {
-  $("aiVoice").innerHTML = TTS_VOICES
-    .map(v => `<option value="${v.id}">${v.label}</option>`).join("");
+  /* Thirty names in one flat list is a wall. The eight that suit short-form
+     go on top; the rest stay one scroll away rather than hidden. */
+  const groups = [];
+  TTS_VOICES.forEach(v => {
+    let g = groups.find(x => x.name === v.group);
+    if (!g) groups.push(g = { name: v.group, items: [] });
+    g.items.push(v);
+  });
+  $("aiVoice").innerHTML = groups.map(g =>
+    `<optgroup label="${g.name}">` +
+    g.items.map(v => `<option value="${v.id}">${v.label}</option>`).join("") +
+    `</optgroup>`).join("");
   $("aiVoiceBox").style.display = "";
   $("btnMakeVoiceFile").addEventListener("click", makeVoiceFile);
+}
+
+if ($("aiVoiceStyles")) {
+  const box = $("aiVoiceStyles"), input = $("aiVoiceStyle");
+  box.innerHTML = VOICE_STYLES.map(s =>
+    `<button type="button" class="stylechip" aria-pressed="false" data-text="${s.text}">${s.name}</button>`).join("");
+  /* Lit only while the box still holds exactly that preset, so an edited
+     preset stops claiming to be one. */
+  const sync = () => box.querySelectorAll(".stylechip").forEach(b =>
+    b.setAttribute("aria-pressed", String(b.dataset.text === input.value.trim())));
+  box.addEventListener("click", e => {
+    const b = e.target.closest(".stylechip");
+    if (!b) return;
+    // Pressing the lit one clears it — a preset is never a one-way door.
+    input.value = input.value.trim() === b.dataset.text ? "" : b.dataset.text;
+    sync();
+  });
+  input.addEventListener("input", sync);
+  sync();
 }
 
 if ($("btnGenerate")) {

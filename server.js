@@ -223,16 +223,40 @@ ${script}`;
    mux it straight in and the screen never has to be shared at all.
    ============================================================ */
 
-/* The voices worth offering, in plain words rather than star names. */
+/* The first eight earned their place by sounding right on short-form. The rest
+   are everything else the model offers, carrying Google's own one-word descriptor
+   rather than a gender I would only be guessing at. */
 const TTS_VOICES = [
-  { id: "Kore",      label: "Aria — warm, steady (female)" },
-  { id: "Leda",      label: "Leda — bright, youthful (female)" },
-  { id: "Aoede",     label: "Aoede — breezy, upbeat (female)" },
-  { id: "Callirrhoe",label: "Callie — soft, easy (female)" },
-  { id: "Puck",      label: "Puck — lively, playful (male)" },
-  { id: "Charon",    label: "Charon — deep, informative (male)" },
-  { id: "Fenrir",    label: "Fenrir — punchy, excitable (male)" },
-  { id: "Orus",      label: "Orus — firm, confident (male)" }
+  { id: "Kore",          label: "Aria — warm and steady (female)", group: "Suggested" },
+  { id: "Leda",          label: "Leda — bright and youthful (female)", group: "Suggested" },
+  { id: "Aoede",         label: "Aoede — breezy and upbeat (female)", group: "Suggested" },
+  { id: "Callirrhoe",    label: "Callie — soft and easy (female)", group: "Suggested" },
+  { id: "Puck",          label: "Puck — lively and playful (male)", group: "Suggested" },
+  { id: "Charon",        label: "Charon — deep and informative (male)", group: "Suggested" },
+  { id: "Fenrir",        label: "Fenrir — punchy and excitable (male)", group: "Suggested" },
+  { id: "Orus",          label: "Orus — firm and confident (male)", group: "Suggested" },
+  { id: "Zephyr",        label: "Zephyr — bright",                 group: "More voices" },
+  { id: "Autonoe",       label: "Autonoe — bright",                group: "More voices" },
+  { id: "Enceladus",     label: "Enceladus — breathy",             group: "More voices" },
+  { id: "Iapetus",       label: "Iapetus — clear",                 group: "More voices" },
+  { id: "Erinome",       label: "Erinome — clear",                 group: "More voices" },
+  { id: "Umbriel",       label: "Umbriel — easy-going",            group: "More voices" },
+  { id: "Algieba",       label: "Algieba — smooth",                group: "More voices" },
+  { id: "Despina",       label: "Despina — smooth",                group: "More voices" },
+  { id: "Algenib",       label: "Algenib — gravelly",              group: "More voices" },
+  { id: "Rasalgethi",    label: "Rasalgethi — informative",        group: "More voices" },
+  { id: "Laomedeia",     label: "Laomedeia — upbeat",              group: "More voices" },
+  { id: "Achernar",      label: "Achernar — soft",                 group: "More voices" },
+  { id: "Alnilam",       label: "Alnilam — firm",                  group: "More voices" },
+  { id: "Schedar",       label: "Schedar — even",                  group: "More voices" },
+  { id: "Gacrux",        label: "Gacrux — mature",                 group: "More voices" },
+  { id: "Pulcherrima",   label: "Pulcherrima — forward",           group: "More voices" },
+  { id: "Achird",        label: "Achird — friendly",               group: "More voices" },
+  { id: "Zubenelgenubi", label: "Zubenelgenubi — casual",          group: "More voices" },
+  { id: "Vindemiatrix",  label: "Vindemiatrix — gentle",           group: "More voices" },
+  { id: "Sadachbia",     label: "Sadachbia — lively",              group: "More voices" },
+  { id: "Sadaltager",    label: "Sadaltager — knowledgeable",      group: "More voices" },
+  { id: "Sulafat",       label: "Sulafat — warm",                  group: "More voices" },
 ];
 
 app.get('/api/tts/voices', (req, res) => {
