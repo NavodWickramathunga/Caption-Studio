@@ -2030,6 +2030,83 @@ async function captureSpokenAudio(onProgress) {
   return { pcm: joined, sampleRate: rate, seconds: total / rate, peak };
 }
 
+/* When does the talking actually begin in these samples? */
+function firstSoundAt(pcm, rate) {
+  const win = Math.max(1, Math.round(rate * 0.02));
+  let peak = 0;
+  for (let i = 0; i < pcm.length; i += 5) { const v = Math.abs(pcm[i]); if (v > peak) peak = v; }
+  const thresh = Math.max(0.02, peak * 0.12);
+  for (let i = 0; i + win <= pcm.length; i += win) {
+    let m = 0;
+    for (let j = 0; j < win; j++) { const v = Math.abs(pcm[i + j]); if (v > m) m = v; }
+    if (m >= thresh) return i / rate;
+  }
+  return 0;
+}
+
+/* Where does the talking stop? Used to catch drift across a whole read. */
+function lastSoundAt(pcm, rate) {
+  const win = Math.max(1, Math.round(rate * 0.02));
+  let peak = 0;
+  for (let i = 0; i < pcm.length; i += 5) { const v = Math.abs(pcm[i]); if (v > peak) peak = v; }
+  const thresh = Math.max(0.02, peak * 0.12);
+  for (let i = pcm.length - win; i >= 0; i -= win) {
+    let m = 0;
+    for (let j = 0; j < win; j++) { const v = Math.abs(pcm[i + j]); if (v > m) m = v; }
+    if (m >= thresh) return (i + win) / rate;
+  }
+  return pcm.length / rate;
+}
+
+/* Aligning the start is not enough on its own: if this reading ran a
+   little faster or slower than the one the captions were timed against,
+   the two drift apart by the end. Stretch the timings to match the
+   recording, keeping every word in the same relative place. */
+function matchTimingsToAudio(pcm, rate) {
+  if (!S.words.length) return 0;
+  const first = S.words[0], last = S.words[S.words.length - 1];
+  if (first.start === null || last.end === null) return 0;
+
+  const heardStart = firstSoundAt(pcm, rate);
+  const heardEnd = lastSoundAt(pcm, rate);
+  const heardSpan = heardEnd - heardStart;
+  const captionSpan = last.end - first.start;
+  if (heardSpan <= 0.3 || captionSpan <= 0.3) return 0;
+
+  const k = heardSpan / captionSpan;
+  if (Math.abs(k - 1) < 0.02) return 0;          // under 2%, leave it alone
+
+  const base = first.start;
+  S.words.forEach(w => {
+    w.start = base + (w.start - base) * k;
+    w.end   = base + (w.end   - base) * k;
+  });
+  return k;
+}
+
+/* Line the recording up with the captions.
+
+   The captions were timed during one reading; the audio was captured
+   during another, and recording starts before the voice does. That
+   lead-in pushes the whole soundtrack late. Measure where the voice
+   really starts and slide the audio so it lands exactly where the first
+   caption expects it. */
+function alignCapturedAudio(pcm, rate, expectedFirstWord) {
+  const onset = firstSoundAt(pcm, rate);
+  const want = Math.max(0, expectedFirstWord || 0);
+  const shift = onset - want;                 // positive: audio starts too late
+  const samples = Math.round(Math.abs(shift) * rate);
+  if (samples < Math.round(rate * 0.02)) return { pcm, shift: 0, onset };
+
+  if (shift > 0) {
+    const out = pcm.subarray(samples);        // trim the dead air off the front
+    return { pcm: out, shift, onset };
+  }
+  const out = new Float32Array(pcm.length + samples);   // or pad it out
+  out.set(pcm, samples);
+  return { pcm: out, shift, onset };
+}
+
 /* The whole soundtrack, decoded up front at full quality, so the audio
    does not depend on anything happening in real time. */
 async function gatherExportAudio(sr) {
@@ -2091,14 +2168,38 @@ async function renderMp4() {
     const cap = await captureSpokenAudio((secs, peak) => {
       say(`Recording the voice — ${secs.toFixed(0)}s, level ${(peak * 100).toFixed(0)}%…`);
     });
-    pcm = cap.pcm;
+    /* Slide the recording so its first word lands where the first caption
+       expects it. Without this the captions run ahead of the voice by
+       however long the share dialog and the speech engine took to start. */
+    const firstWord = (S.words[0] && S.words[0].start) || 0;
+    const aligned = alignCapturedAudio(cap.pcm, cap.sampleRate, firstWord);
+    pcm = aligned.pcm;
     audioRate = cap.sampleRate;
+
+    // then correct any speed difference across the whole read
+    const stretch = matchTimingsToAudio(pcm, audioRate);
+    if (stretch) {
+      renderChips();
+      frameCount = Math.max(frameCount,
+        Math.round(((S.words[S.words.length - 1].end || 0) + cardSecs + 0.2) * FPS));
+    }
+    const heard = pcm.length / audioRate;
+
     // Never cut the voice off: if it ran past the clips, hold the last
     // frame for the remainder rather than ending mid-sentence.
-    if (cap.seconds > dur + cardSecs + 0.1) {
-      frameCount = Math.round(cap.seconds * FPS);
+    if (heard > dur + cardSecs + 0.1) frameCount = Math.round(heard * FPS);
+
+    const bits = [];
+    if (Math.abs(aligned.shift) >= 0.02) {
+      bits.push(`shifted the sound ${aligned.shift > 0 ? "earlier" : "later"} by ` +
+                `${Math.abs(aligned.shift).toFixed(2)}s`);
     }
-    say(`Captured ${cap.seconds.toFixed(1)}s of voice. Now building the picture…`);
+    if (stretch) {
+      bits.push(`stretched the captions ${((stretch - 1) * 100).toFixed(1)}% to match the reading`);
+    }
+    say(`Captured ${heard.toFixed(1)}s of voice — ` +
+        (bits.length ? bits.join(" and ") + "." : "it already lined up.") +
+        ` Now building the picture…`);
   } else {
     setAiClockLabel(btn, "Reading the sound");
     pcm = await gatherExportAudio(SR);
