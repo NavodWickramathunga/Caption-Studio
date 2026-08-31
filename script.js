@@ -2712,10 +2712,17 @@ async function callGeminiApi(promptText, audioBlob = null, jsonSchema = null) {
      when the request is made. So if the chosen model is refused, drop it,
      pick another, and retry once - without making you click the button again. */
   let res, model, lastMsg = "";
-  for (let attempt = 0; attempt < 2; attempt++) {
+  for (let attempt = 0; attempt < 3; attempt++) {
     model = await resolveGeminiModel(apiKey);
+    /* A busy model does not always refuse. Sometimes it accepts the request and
+       simply never answers, and the newest model is the busiest one there is.
+       So the first pick gets a short leash: if it has said nothing in twenty
+       seconds it is not going to, and another model is a better use of the
+       wait than the rest of a minute and a half. */
+    const patience = attempt === 0 ? 20000 : 90000;
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort("timeout"), 90000);
+    const timer = setTimeout(() => ctrl.abort("timeout"), patience);
+    let stalled = false;
     try {
       res = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
@@ -2724,20 +2731,29 @@ async function callGeminiApi(promptText, audioBlob = null, jsonSchema = null) {
       );
     } catch (netErr) {
       if (netErr && netErr.name === "AbortError") {
-        throw new Error("Gemini didn't answer within 90s. Your network may be blocking it — try again.");
+        if (attempt < 2) { GEMINI_REJECTED.add(model); GEMINI_MODEL = null; stalled = true; }
+        else throw new Error("Gemini didn't answer in time. Your network may be blocking it — try again.");
+      } else {
+        throw new Error("Couldn't reach Google. Check your connection and try again.");
       }
-      throw new Error("Couldn't reach Google. Check your connection and try again.");
     } finally {
       clearTimeout(timer);
     }
+    if (stalled) continue;
     if (res.ok) break;
 
     const errData = await res.json().catch(() => ({}));
     lastMsg = errData.error?.message || "";
-    const refused = res.status === 404 ||
-                    /no longer available|not found|not supported|does not exist/i.test(lastMsg);
+    /* Two different things send us to another model. A retired one is gone for
+       good. A model "experiencing high demand" is not gone, but the newest is
+       the busiest, and waiting out a spike is worse than reading the same
+       question to a model that is free right now. */
+    const gone     = res.status === 404 ||
+                     /no longer available|not found|not supported|does not exist/i.test(lastMsg);
+    const swamped  = res.status === 503 ||
+                     /high demand|overloaded|unavailable|try again later/i.test(lastMsg);
 
-    if (refused && attempt === 0) {
+    if ((gone || swamped) && attempt < 2) {
       GEMINI_REJECTED.add(model);   // never offer this one again this session
       GEMINI_MODEL = null;
       continue;                      // resolve a different model and try again
@@ -2746,7 +2762,7 @@ async function callGeminiApi(promptText, audioBlob = null, jsonSchema = null) {
     if (res.status === 429) throw new Error("Free-tier rate limit reached. Wait about a minute and try again.");
     if (res.status === 400 && /API key/i.test(lastMsg)) throw new Error("That API key was rejected. Open the 🔑 dialog and paste a fresh one.");
     if (/quota|billing|credits/i.test(lastMsg)) throw new Error("This key's project is out of quota or credits. Make a key in a new project.");
-    if (refused) throw new Error(`No Gemini model on this key would accept the request. Last tried "${model}".`);
+    if (gone || swamped) throw new Error(`No Gemini model on this key would take the request. Last tried "${model}".`);
     throw new Error(lastMsg || `Gemini API HTTP Error ${res.status}`);
   }
 
@@ -2763,7 +2779,11 @@ async function callGeminiApi(promptText, audioBlob = null, jsonSchema = null) {
 /* Try this one first. Older keys can still use it; keys made after Google's
    cut-off get refused, and the caller then falls through to a current model
    automatically. Set to null to always take the newest available instead. */
-const PREFERRED_MODEL = "gemini-2.5-flash";
+/* Naming a favourite here was how this rotted: gemini-2.5-flash is now closed
+   to new keys, so every fresh session spent its first call being refused
+   before the retry found something that worked. Ask what the key can actually
+   reach instead — that answer cannot go stale. */
+const PREFERRED_MODEL = null;
 
 let GEMINI_MODEL = null;
 const GEMINI_REJECTED = new Set();   // models this key was refused, so we stop offering them
@@ -3756,7 +3776,37 @@ function stopAiClock(btn, doneLabel, holdMs) {
    actual samples, so the exporter writes them straight in. Nothing shared,
    nothing to get wrong, and the MP4 can carry the voice at last.
    ============================================================ */
-const TTS_MODEL = "gemini-2.5-flash-preview-tts";
+/* The speech models are all previews, and previews get retired — that is
+   exactly how the text side broke. So pick one from what the key can see,
+   newest first, and remember any that refuse. Pro is skipped on purpose: it
+   has no free tier and answers "exceeded your quota" rather than anything
+   useful. */
+let TTS_MODEL = null;
+const TTS_REJECTED = new Set();
+
+async function resolveTtsModel(apiKey) {
+  if (TTS_MODEL && !TTS_REJECTED.has(TTS_MODEL)) return TTS_MODEL;
+  const ver = n => { const m = n.match(/(\d+(?:\.\d+)?)/); return m ? parseFloat(m[1]) : 0; };
+  try {
+    const r = await fetch("https://generativelanguage.googleapis.com/v1beta/models?key=" +
+                          encodeURIComponent(apiKey) + "&pageSize=200");
+    if (r.ok) {
+      const j = await r.json();
+      const pool = (j.models || [])
+        .map(m => m.name.replace(/^models\//, ""))
+        .filter(n => /tts/i.test(n) && !/pro/i.test(n))
+        .filter(n => !TTS_REJECTED.has(n));
+      if (pool.length) {
+        pool.sort((a, b) => ver(b) - ver(a));
+        TTS_MODEL = pool[0];
+        return TTS_MODEL;
+      }
+    }
+  } catch (e) { /* fall through to the names below */ }
+  const fallbacks = ["gemini-3.1-flash-tts-preview", "gemini-2.5-flash-preview-tts"];
+  TTS_MODEL = fallbacks.find(n => !TTS_REJECTED.has(n)) || "gemini-2.5-flash-preview-tts";
+  return TTS_MODEL;
+}
 /* The first eight earned their place by sounding right on short-form. The rest
    are everything else the model offers, carrying Google's own one-word descriptor
    rather than a gender I would only be guessing at. */
@@ -3839,29 +3889,54 @@ async function makeVoiceFile() {
 
   startAiClock(btn, "Speaking your script");
   setAiVoiceStatus("");
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort("timeout"), 120000);
   try {
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${TTS_MODEL}:generateContent?key=${apiKey}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        signal: ctrl.signal,
-        body: JSON.stringify({
-          contents: [{ role: "user", parts: [{ text: style ? `${style}: ${text}` : text }] }],
-          generationConfig: {
-            responseModalities: ["AUDIO"],
-            speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } }
+    /* A refused model is dropped and another tried once, so a retired preview
+       costs a round trip rather than the whole feature. */
+    let res, model, lastMsg = "";
+    for (let attempt = 0; attempt < 2; attempt++) {
+      model = await resolveTtsModel(apiKey);
+      /* Same short leash on the first pick, for the same reason. Speech takes
+         longer to make than a sentence of text, so the patience is larger. */
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort("timeout"), attempt === 0 ? 45000 : 120000);
+      let stalled = false;
+      try {
+        res = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            signal: ctrl.signal,
+            body: JSON.stringify({
+              contents: [{ role: "user", parts: [{ text: style ? `${style}: ${text}` : text }] }],
+              generationConfig: {
+                responseModalities: ["AUDIO"],
+                speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } }
+              }
+            })
           }
-        })
+        );
+      } catch (netErr) {
+        if (netErr && netErr.name === "AbortError" && attempt === 0) {
+          TTS_REJECTED.add(model); TTS_MODEL = null; stalled = true;
+        } else if (netErr && netErr.name === "AbortError") {
+          throw new Error("Google didn't answer in time. Try a shorter script.");
+        } else {
+          throw new Error("Couldn't reach Google. Check your connection and try again.");
+        }
+      } finally {
+        clearTimeout(timer);
       }
-    );
-    if (!res.ok) {
-      const msg = (await res.json().catch(() => ({}))).error?.message || `HTTP ${res.status}`;
-      throw new Error(/quota|billing/i.test(msg)
-        ? "Google refused the request — the key has no quota left for the voice model."
-        : msg);
+      if (stalled) continue;
+      if (res.ok) break;
+
+      lastMsg = (await res.json().catch(() => ({}))).error?.message || `HTTP ${res.status}`;
+      const moveOn = res.status === 404 || res.status === 503 ||
+                     /no longer available|not found|not supported|does not exist|high demand|overloaded|unavailable/i.test(lastMsg);
+      if (moveOn && attempt === 0) { TTS_REJECTED.add(model); TTS_MODEL = null; continue; }
+      throw new Error(/quota|billing/i.test(lastMsg)
+        ? "Google refused the request — this key has no quota left for the voice model."
+        : lastMsg);
     }
     const data = await res.json();
     const part = (data.candidates?.[0]?.content?.parts || []).find(p => p.inlineData?.data);
@@ -3896,10 +3971,8 @@ async function makeVoiceFile() {
     stopAiClock(btn);
     const why = String((e && e.message) || e);
     setAiVoiceStatus(/abort|timeout/i.test(why)
-      ? "Google didn't answer within two minutes. Try a shorter script."
+      ? "Google didn't answer in time. Try a shorter script."
       : why, "warn");
-  } finally {
-    clearTimeout(timer);
   }
 }
 
