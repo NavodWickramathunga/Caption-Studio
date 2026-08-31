@@ -5,8 +5,8 @@ a captioning service.
 
 Two to four words on screen at a time, heavy uppercase, thick black outline, and the
 word being spoken flipping to yellow. The look is the easy part; the expensive part
-is knowing *exactly* when each word is spoken. Caption Studio produces that three
-different ways, and two of them never touch the internet.
+is knowing *exactly* when each word is spoken. Caption Studio produces that five
+different ways, and three of them never touch the internet.
 
 **Open it → https://navodwickramathunga.github.io/Caption-Studio/**
 
@@ -25,8 +25,24 @@ The order matters and this is why the button exists: the voice has to be made
 Timing first and generating the voice afterwards leaves captions drifting
 against a voiceover they were never measured against.
 
+Tick **…and save the finished MP4** and it renders and downloads the video too,
+so the one button really is the whole job.
+
+**Make several at once** takes one topic per line. Each gets its own script, its
+own voice and its own timings, renders over the same clips, and lands in your
+downloads named after its topic. They run one after another, because each pass
+owns the script box, the voiceover and the timings — two at once would be two
+runs fighting over one set of state. A topic that fails is reported by name and
+the rest carry on.
+
 You still add your own clips in step 1 — the fast track does the words, the
 voice and the timing, not the footage.
+
+### The key
+
+The AI parts talk to Google straight from your browser using a key you paste
+into **🔑 Gemini Key** once. There is no server in the loop and no `.env` to
+set up — the key is kept in that browser's local storage and goes nowhere else.
 
 ---
 
@@ -53,6 +69,8 @@ Every word needs a start and an end. Three ways to get there:
 | **Speak it and time the words** | The browser reads your script aloud and reports each word as it says it | nothing |
 | **⏱ Time it for me** | Reads the loudness of an audio file to find the talking, then spreads words across it by syllable count | nothing |
 | **Spacebar** | You tap along in rhythm | nothing |
+| **Write the captions from the voice** | Whisper runs on this machine and reports a real start and end for every word. The tightest of the lot | nothing, after a one-off 40 MB download |
+| **Auto-Sync** | Asks Gemini for the timings, and falls back to doing it here | a key |
 
 They all write to the same list, so you can auto-time first and fix a few words by hand.
 
@@ -145,6 +163,11 @@ and Chrome cannot reach them.
 
 - `index.html` / `script.js` / `style.css` — the captioning tool
 - `voice-match.html` / `voice-match.js` / `voice-match.css` — the voice finder
-- `server.js`, `package.json` — optional local Express host; GitHub Pages serves the
-  site as static files and does not use these
+- `ui.js` — the step rail, kept apart from `script.js` because it only reads
+  what is on screen
+- `server.js`, `package.json` — optional local host for `npm run dev`. It serves
+  files and nothing else: it used to carry seven API endpoints that the browser
+  never called, every one a second copy of something `script.js` already did,
+  and duplicates like that are where the caption drift came from. GitHub Pages
+  does not use these at all
 - `BUILD-PROMPT.md` — the original spec

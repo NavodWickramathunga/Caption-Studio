@@ -981,15 +981,12 @@ function setMode(mode) {
   syncTransport();
 }
 if ($("modeOwn"))  $("modeOwn").addEventListener("click",  () => setMode("own"));
-/* The ElevenLabs tab has no panel behind it, so clicking it did nothing at
-   all. Say why, and point at the route that gets the same result. */
+/* The ElevenLabs tab is gone. It sat in prime position and its only job was
+   to admit it did nothing; making the voice elsewhere and loading it under
+   "Load a file" was always the answer, and that tab says so itself. The
+   guard stays for a saved session that still names the old mode. */
 if ($("modePremium")) {
-  $("modePremium").addEventListener("click", () => {
-    $("modePremium").setAttribute("aria-selected", "false");
-    setMode("file");
-    say("ElevenLabs isn't built in — it needs a paid account and a key. " +
-        "Make the voiceover there, save the audio, and load it here instead.", "warn");
-  });
+  $("modePremium").addEventListener("click", () => setMode("file"));
 }
 $("modeGen").addEventListener("click", () => setMode("generated"));
 $("modeFile").addEventListener("click", () => setMode("file"));
@@ -1348,7 +1345,7 @@ function renderChips() {
         if (!S.emphasise) {
           S.emphasise = true;
           if ($("emphasise")) $("emphasise").checked = true;
-          if ($("keyRow")) $("keyRow").style.display = "";
+          if ($("keyRow")) $("keyRow").style.display = "inline-flex";
         }
         renderChips();
         return;
@@ -1416,13 +1413,16 @@ function buildSwatches(wrap, list, get, set) {
     wrap.appendChild(b);
   });
 }
-buildSwatches($("swatches"), COLORS, () => S.hlColor, v => S.hlColor = v);
+/* Both of these used to be handed containers that no markup defined, so each
+   call returned at its first line and the colour lists were unreachable. The
+   highlight colour has its own picker in the markup; the key colour now has
+   a real row to draw into. */
 buildSwatches($("keySwatches"), KEY_COLORS, () => S.keyColor, v => S.keyColor = v);
 
 if ($("emphasise")) {
   $("emphasise").addEventListener("change", e => {
     S.emphasise = e.target.checked;
-    if ($("keyRow")) $("keyRow").style.display = S.emphasise ? "" : "none";
+    if ($("keyRow")) $("keyRow").style.display = S.emphasise ? "inline-flex" : "none";
     renderChips();
   });
 }
@@ -3941,6 +3941,55 @@ if ($("aiVoice")) {
    by hand in the wrong order is exactly how captions end up drifting
    against a voice they were never measured against.
    ============================================================ */
+/* A filename that says which topic it came from, so a batch of ten does not
+   arrive as ten files with the same name and numbers bolted on. */
+function topicSlug(t) {
+  return String(t || "").toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 42) || "video";
+}
+
+/* One pass of the whole job. Fast track runs it once, the batch runs it down
+   a list, and both come through here — so there is only ever one order, and
+   only one place it could be got wrong. */
+async function runPipeline(topic, opts) {
+  const report = (opts && opts.report) || function () {};
+
+  if (topic) {
+    report("Writing the script…");
+    const prompt = `Write a highly engaging, 30-second script for a TikTok/Reels video about: "${topic}". ` +
+                   `Start with a strong hook. Keep sentences short and punchy. ` +
+                   `Return ONLY the spoken script text, no punctuation or markdown.`;
+    scriptEl.value = await callGeminiApi(prompt);
+    parseScript();
+  }
+  if (!scriptEl.value.trim()) throw new Error("No script came back — try wording the topic differently.");
+
+  report("Speaking it…");
+  if ($("aiVoice") && opts && opts.voice) $("aiVoice").value = opts.voice;   // keep step 2 honest
+  await makeVoiceFile();
+  if (!S.voiceoverBlob) throw new Error("The voice was not made, so there is nothing to time against.");
+
+  /* Whisper, on this machine, against the recording just made — the only
+     audio that can possibly be the right one. */
+  report("Timing every word against that recording…");
+  await transcribeFromVoice();
+  if (!allTimed()) {
+    throw new Error("It spoke, but the words were not all timed. Open step 4 and press “⏱ Time it for me”.");
+  }
+
+  if (opts && opts.render) {
+    if (!CAN_MP4) throw new Error("This browser cannot build MP4 files — save the .webm from step 5 instead.");
+    if (!S.clips.length) throw new Error("There are no clips to render the captions over — add them in step 1.");
+    report("Rendering the MP4…");
+    /* exportMp4 names the file from S.videoName. Lend it the topic for the
+       length of the render, then give the clip its name back. */
+    const keep = S.videoName;
+    if (opts.name) S.videoName = opts.name;
+    try { await exportMp4(); } finally { S.videoName = keep; }
+  }
+  return S.words.length;
+}
+
 async function autoMakeVideo() {
   const btn = $("btnAutoMake");
   const set = (msg, kind) => {
@@ -3956,36 +4005,72 @@ async function autoMakeVideo() {
   /* Ask once, here, rather than letting the run die halfway through. */
   if (!getApiKey()) { $("apiKeyModal").classList.add("open"); return; }
 
+  const render = !!($("autoRender") && $("autoRender").checked);
   btn.disabled = true;
   try {
-    if (topic) {
-      set("Writing the script…");
-      const prompt = `Write a highly engaging, 30-second script for a TikTok/Reels video about: "${topic}". ` +
-                     `Start with a strong hook. Keep sentences short and punchy. ` +
-                     `Return ONLY the spoken script text, no punctuation or markdown.`;
-      scriptEl.value = await callGeminiApi(prompt);
-      parseScript();
+    const n = await runPipeline(topic, {
+      report: set,
+      voice: $("autoVoice").value,
+      render: render,
+      name: topic ? topicSlug(topic) : null
+    });
+    if (render) {
+      set(`Done — ${n} words timed, and the MP4 is in your downloads.`, "ok");
+    } else {
+      set(`Done — ${n} words timed to the voice you just heard. Look over step 4, then export.`, "ok");
+      const five = document.getElementById("step5");
+      if (five) five.scrollIntoView({ behavior: "smooth", block: "start" });
     }
-    if (!scriptEl.value.trim()) throw new Error("No script came back — try wording the topic differently.");
-
-    set("Speaking it…");
-    if ($("aiVoice")) $("aiVoice").value = $("autoVoice").value;   // keep step 2 honest
-    await makeVoiceFile();
-    if (!S.voiceoverBlob) throw new Error("The voice was not made, so there is nothing to time against.");
-
-    /* Whisper, on this machine, against the recording just made — which is
-       the only audio that can be right. */
-    set("Timing every word against that recording…");
-    await transcribeFromVoice();
-    if (!allTimed()) {
-      throw new Error("It spoke, but the words were not all timed. Open step 4 and press “⏱ Time it for me”.");
-    }
-
-    set(`Done — ${S.words.length} words timed to the voice you just heard. Look over step 4, then export.`, "ok");
-    const five = document.getElementById("step5");
-    if (five) five.scrollIntoView({ behavior: "smooth", block: "start" });
   } catch (e) {
     set(String((e && e.message) || e), "warn");
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+/* The same clips, one video per line. Sequential on purpose: every pass owns
+   the script box, the voiceover and the timings, so two at once would be two
+   runs fighting over one set of state. */
+async function runBatch() {
+  const btn = $("btnBatchRun");
+  const set = (msg, kind) => {
+    const el = $("batchStatus");
+    if (el) { el.className = "status" + (kind ? " " + kind : ""); el.textContent = msg; }
+  };
+
+  const topics = ($("batchTopics").value || "").split(/\r?\n/)
+    .map(t => t.trim()).filter(Boolean);
+  if (!topics.length) { set("Put one topic on each line first.", "warn"); return; }
+  if (!getApiKey()) { $("apiKeyModal").classList.add("open"); return; }
+  if (!S.clips.length) {
+    set("Add your clips in step 1 first — every video in the batch is cut over the same footage.", "warn");
+    return;
+  }
+
+  btn.disabled = true;
+  const failed = [];
+  let made = 0;
+  try {
+    for (let i = 0; i < topics.length; i++) {
+      const t = topics[i];
+      const tag = "[" + (i + 1) + "/" + topics.length + "] " + t.slice(0, 38) + " — ";
+      try {
+        await runPipeline(t, {
+          report: m => set(tag + m),
+          voice: $("autoVoice").value,
+          render: true,
+          name: topicSlug(t)
+        });
+        made++;
+      } catch (e) {
+        /* One bad topic should not take the other nine down with it. */
+        failed.push(t.slice(0, 38) + " (" + String((e && e.message) || e).slice(0, 70) + ")");
+      }
+    }
+    set(made + " of " + topics.length + " rendered." +
+        (failed.length ? " Did not finish: " + failed.join("; ")
+                       : " They are all in your downloads."),
+        failed.length ? "warn" : "ok");
   } finally {
     btn.disabled = false;
   }
@@ -3996,6 +4081,7 @@ if ($("btnAutoMake")) {
   if ($("autoVoice") && $("aiVoice")) $("autoVoice").innerHTML = $("aiVoice").innerHTML;
   $("btnAutoMake").addEventListener("click", autoMakeVideo);
 }
+if ($("btnBatchRun")) $("btnBatchRun").addEventListener("click", runBatch);
 
 if ($("aiVoiceStyles")) {
   const box = $("aiVoiceStyles"), input = $("aiVoiceStyle");
