@@ -56,6 +56,27 @@ body::before{
   border:1px solid var(--line);border-radius:999px;padding:4px 11px;white-space:nowrap;
 }
 
+/* ---------- fast track ---------- */
+/* The one card that does the whole job, so it should not look like the
+   five that do it a piece at a time. */
+.autocard{
+  border-color:rgba(221,95,119,.34);
+  background:
+    linear-gradient(180deg, rgba(221,95,119,.09), rgba(221,95,119,0) 62%),
+    var(--panel);
+}
+.autocard > h2 i{background:var(--rose-deep);color:#ffeef1;font-size:13px}
+.autocard .txt,.autocard select{width:100%}
+.autocard .vo-actions{margin-top:14px}
+.autocard #btnAutoMake{font-size:14px;padding:11px 20px}
+.steprail a[href="#step0"] i{font-family:var(--ui);font-size:12px}
+.steprail a[href="#step0"][aria-current="step"] i{background:var(--rose-deep);color:#ffeef1;border-color:var(--rose)}
+.txt{
+  font:inherit;font-size:13px;color:var(--ivory);background:var(--panel-2);
+  border:1px solid var(--line);border-radius:9px;padding:9px 11px;
+}
+.txt::placeholder{color:var(--ivory-faint)}
+
 /* ---------- step rail ---------- */
 .steprail{
   display:flex;gap:4px;padding:0 30px 9px;

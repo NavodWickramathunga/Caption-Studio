@@ -12,6 +12,24 @@ different ways, and two of them never touch the internet.
 
 ---
 
+## The fast way
+
+**Fast track** is the card at the top. Type what the video is about, pick a
+narrator, press one button. It writes the script, speaks it, times every word
+against that exact recording, and leaves you at the export.
+
+Steps 1–5 below it are the same job by hand, for when you want to steer.
+
+The order matters and this is why the button exists: the voice has to be made
+*before* the words are timed, because the timing is measured from the recording.
+Timing first and generating the voice afterwards leaves captions drifting
+against a voiceover they were never measured against.
+
+You still add your own clips in step 1 — the fast track does the words, the
+voice and the timing, not the footage.
+
+---
+
 ## Your clip stays on your machine
 
 Video and audio are read straight off disk with `URL.createObjectURL` and every frame

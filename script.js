@@ -3931,6 +3931,72 @@ if ($("aiVoice")) {
   $("btnMakeVoiceFile").addEventListener("click", makeVoiceFile);
 }
 
+/* ============================================================
+   Fast track.
+
+   Every piece of this already existed as its own button. What was missing
+   was the order, and the order is the whole game: the words have to be
+   spoken before they can be timed, and the timing has to be taken from
+   that recording rather than from whatever else is lying around. Doing it
+   by hand in the wrong order is exactly how captions end up drifting
+   against a voice they were never measured against.
+   ============================================================ */
+async function autoMakeVideo() {
+  const btn = $("btnAutoMake");
+  const set = (msg, kind) => {
+    const el = $("autoStatus");
+    if (el) { el.className = "status" + (kind ? " " + kind : ""); el.textContent = msg; }
+  };
+
+  const topic = ($("autoTopic").value || "").trim();
+  if (!topic && !scriptEl.value.trim()) {
+    set("Give it a topic, or put a script in step 3 — it needs words before it can speak.", "warn");
+    return;
+  }
+  /* Ask once, here, rather than letting the run die halfway through. */
+  if (!getApiKey()) { $("apiKeyModal").classList.add("open"); return; }
+
+  btn.disabled = true;
+  try {
+    if (topic) {
+      set("Writing the script…");
+      const prompt = `Write a highly engaging, 30-second script for a TikTok/Reels video about: "${topic}". ` +
+                     `Start with a strong hook. Keep sentences short and punchy. ` +
+                     `Return ONLY the spoken script text, no punctuation or markdown.`;
+      scriptEl.value = await callGeminiApi(prompt);
+      parseScript();
+    }
+    if (!scriptEl.value.trim()) throw new Error("No script came back — try wording the topic differently.");
+
+    set("Speaking it…");
+    if ($("aiVoice")) $("aiVoice").value = $("autoVoice").value;   // keep step 2 honest
+    await makeVoiceFile();
+    if (!S.voiceoverBlob) throw new Error("The voice was not made, so there is nothing to time against.");
+
+    /* Whisper, on this machine, against the recording just made — which is
+       the only audio that can be right. */
+    set("Timing every word against that recording…");
+    await transcribeFromVoice();
+    if (!allTimed()) {
+      throw new Error("It spoke, but the words were not all timed. Open step 4 and press “⏱ Time it for me”.");
+    }
+
+    set(`Done — ${S.words.length} words timed to the voice you just heard. Look over step 4, then export.`, "ok");
+    const five = document.getElementById("step5");
+    if (five) five.scrollIntoView({ behavior: "smooth", block: "start" });
+  } catch (e) {
+    set(String((e && e.message) || e), "warn");
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+if ($("btnAutoMake")) {
+  /* One list of narrators, not two that can disagree. */
+  if ($("autoVoice") && $("aiVoice")) $("autoVoice").innerHTML = $("aiVoice").innerHTML;
+  $("btnAutoMake").addEventListener("click", autoMakeVideo);
+}
+
 if ($("aiVoiceStyles")) {
   const box = $("aiVoiceStyles"), input = $("aiVoiceStyle");
   box.innerHTML = VOICE_STYLES.map(s =>

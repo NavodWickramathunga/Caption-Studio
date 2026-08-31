@@ -20,6 +20,7 @@
 <!-- Five steps in the order they have to happen. The voice must exist before
      the timing is taken, or the captions drift against it. -->
 <nav class="steprail" id="stepRail" aria-label="Steps">
+  <a href="#step0" data-step="step0"><i>⚡</i><span>Fast track</span></a>
   <a href="#step1" data-step="step1"><i>1</i><span>Clips</span></a>
   <a href="#step2" data-step="step2"><i>2</i><span>Voiceover</span></a>
   <a href="#step3" data-step="step3"><i>3</i><span>Script</span></a>
@@ -62,6 +63,31 @@
 
   <!-- ============ STEPS ============ -->
   <div class="steps">
+
+    <!-- Everything here already existed as three separate buttons. What was
+         missing was the order: speak first, then time against that recording. -->
+    <section class="step autocard" id="step0">
+      <h2><i>⚡</i>Fast track</h2>
+      <p class="hint">Give it a topic. It writes the script, speaks it, times every word
+        against that exact recording, and drops you at the export. Steps 1–5 are the same
+        job by hand, if you want to steer.</p>
+      <div class="field">
+        <label for="autoTopic">What is the video about?</label>
+        <input type="text" id="autoTopic" class="txt"
+               placeholder="e.g. why nobody talks about the best street food in Colombo">
+      </div>
+      <div class="field" style="margin-top:10px">
+        <label for="autoVoice">Narrator</label>
+        <select id="autoVoice"></select>
+      </div>
+      <div class="vo-actions">
+        <button id="btnAutoMake" class="primary">⚡ Make it for me</button>
+      </div>
+      <p class="hint" style="margin:9px 0 0;font-size:11.5px">
+        Leave the topic empty to use the script already in step 3. Your clips still come from step 1.
+      </p>
+      <div class="status" id="autoStatus" role="status" aria-live="polite"></div>
+    </section>
 
     <section class="step" id="step1">
       <h2><i>1</i>Choose your clips</h2>
