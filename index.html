@@ -4,7 +4,7 @@
 <title>Caption Studio</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Anton&family=JetBrains+Mono:wght@400;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Anton&family=JetBrains+Mono:wght@400;600&family=Inter:wght@400;500;600&family=Noto+Sans+Sinhala:wght@700&family=Noto+Sans+Tamil:wght@700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="style.css">
 
 <div class="app">
@@ -76,9 +76,21 @@
         <input type="text" id="autoTopic" class="txt"
                placeholder="e.g. why nobody talks about the best street food in Colombo">
       </div>
-      <div class="field" style="margin-top:10px">
-        <label for="autoVoice">Narrator</label>
-        <select id="autoVoice"></select>
+      <div class="grid2" style="margin-top:10px">
+        <div class="field">
+          <label for="autoVoice">Narrator</label>
+          <select id="autoVoice"></select>
+        </div>
+        <div class="field">
+          <!-- The voice detects the language from the words, so this only has to
+               tell the script writer which language to write in. -->
+          <label for="autoLang">Language</label>
+          <select id="autoLang">
+            <option value="">English</option>
+            <option value="Sinhala">Sinhala</option>
+            <option value="Tamil">Tamil</option>
+          </select>
+        </div>
       </div>
       <label class="chk" style="margin-top:11px">
         <input type="checkbox" id="autoRender"> …and save the finished MP4 when it is done
@@ -102,6 +114,15 @@
         </p>
         <textarea id="batchTopics" rows="5" class="txt" style="width:100%;resize:vertical"
           placeholder="street food you have never heard of&#10;why the bus is always late&#10;three things nobody tells you about Colombo"></textarea>
+        <label style="display:block;font-size:11.5px;color:var(--ivory-dim);margin:10px 0 0">In these languages</label>
+        <div class="stylechips" id="batchLangs">
+          <button type="button" class="stylechip" aria-pressed="true"  data-lang="">English</button>
+          <button type="button" class="stylechip" aria-pressed="false" data-lang="Sinhala">Sinhala</button>
+          <button type="button" class="stylechip" aria-pressed="false" data-lang="Tamil">Tamil</button>
+        </div>
+        <p class="hint" style="margin:7px 0 0;font-size:11.5px">
+          Two topics in three languages is six videos, over the same clips.
+        </p>
         <div class="vo-actions">
           <button id="btnBatchRun">▶ Make all of them</button>
         </div>
@@ -207,10 +228,37 @@
             <label for="aiVoice">Narrator</label>
             <select id="aiVoice"></select>
           </div>
+
+          <!-- Two people talking beats one person explaining, and the model can
+               do both parts in a single take. -->
+          <label class="chk" style="margin-top:10px">
+            <input type="checkbox" id="twoVoices"> Two speakers, talking to each other
+          </label>
+          <div id="twoVoiceRow" style="display:none">
+            <div class="grid2" style="margin-top:6px">
+              <div class="field">
+                <label for="spk1Name">First name</label>
+                <input type="text" id="spk1Name" class="txt" value="Ravi" maxlength="20">
+                <select id="spk1Voice" style="margin-top:5px"></select>
+              </div>
+              <div class="field">
+                <label for="spk2Name">Second name</label>
+                <input type="text" id="spk2Name" class="txt" value="Nimal" maxlength="20">
+                <select id="spk2Voice" style="margin-top:5px"></select>
+              </div>
+            </div>
+            <p class="hint" style="margin:8px 0 0;font-size:11.5px">
+              Write the script one line per turn, as <code>Ravi: what he says</code>. Fast track
+              will write it that way for you.
+            </p>
+          </div>
           <div class="field" style="margin-top:9px">
             <label for="aiVoiceStyle">How it should sound <span style="opacity:.7">(optional)</span></label>
-            <input type="text" id="aiVoiceStyle" placeholder="e.g. upbeat and fast, like a friend telling you a secret"
-                   style="width:100%;padding:6px;font-size:12px;background:var(--panel-2);color:white;border:1px solid var(--line);border-radius:4px">
+            <!-- A textarea, not an input: the direction can name a line and change
+                 partway through, and a one-line box hid that this was possible. -->
+            <textarea id="aiVoiceStyle" rows="2" class="txt"
+                   placeholder="e.g. upbeat and fast, like a friend telling you a secret&#10;or: whisper the first line, then say the rest slow and smug"
+                   style="width:100%;resize:vertical;font-size:12px"></textarea>
             <!-- Presets, because a blank box asking how a voice should sound is
                  the kind of question most people skip rather than answer. -->
             <div class="stylechips" id="aiVoiceStyles"></div>

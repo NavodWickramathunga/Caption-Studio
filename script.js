@@ -37,6 +37,63 @@ const KEY_COLORS = [
 
 const FONT_STACK = 'Anton, "Arial Narrow", Impact, Haettenschweiler, sans-serif';
 
+/* Anton carries no Sinhala or Tamil glyphs, so a Sinhala caption in it draws
+   as a row of boxes. Uppercasing is just as wrong: neither script has cases,
+   and toUpperCase leaves the text alone while implying it did something. Pick
+   the face and the casing from what the words actually are. */
+const SINHALA_RANGE = /[\u0D80-\u0DFF]/;
+const TAMIL_RANGE   = /[\u0B80-\u0BFF]/;
+
+function scriptKind(text) {
+  const t = String(text || "");
+  if (SINHALA_RANGE.test(t)) return "sinhala";
+  if (TAMIL_RANGE.test(t))   return "tamil";
+  return "latin";
+}
+
+/* A webfont nothing on the page uses is never actually fetched, and canvas
+   does not wait for one — it quietly draws with a fallback, which for these
+   two scripts means boxes. So ask for the face the moment a script turns out
+   to need it. The preview repaints every frame anyway, so it picks the real
+   face up on its own once it lands; the chips are DOM and need telling. An
+   English session never asks, and pays nothing. */
+const FACE_ASKED = new Set();
+function ensureFace(kind) {
+  if (kind === "latin" || FACE_ASKED.has(kind)) return;
+  FACE_ASKED.add(kind);
+  if (!(document.fonts && document.fonts.load)) return;
+  const family = kind === "sinhala" ? '"Noto Sans Sinhala"' : '"Noto Sans Tamil"';
+  const sample = kind === "sinhala" ? "ක" : "க";
+  document.fonts.load('700 100px ' + family, sample)
+    .then(() => { try { renderChips(); } catch (e) {} })
+    .catch(() => {});
+}
+
+/* The face used on the canvas. */
+function fontFor(text) {
+  const kind = scriptKind(text);
+  ensureFace(kind);
+  switch (kind) {
+    case "sinhala": return '"Noto Sans Sinhala", ' + FONT_STACK;
+    case "tamil":   return '"Noto Sans Tamil", ' + FONT_STACK;
+    default:        return FONT_STACK;
+  }
+}
+
+/* The name ffmpeg will look for when burning the .ass in. */
+function assFontFor(text) {
+  switch (scriptKind(text)) {
+    case "sinhala": return "Noto Sans Sinhala";
+    case "tamil":   return "Noto Sans Tamil";
+    default:        return "Anton";
+  }
+}
+
+/* Shout in Latin, leave every other script as written. */
+function captionCase(text) {
+  return scriptKind(text) === "latin" ? String(text).toUpperCase() : String(text);
+}
+
 const $ = id => document.getElementById(id);
 const video = $("video"), audio = $("audio"), overlay = $("overlay");
 const octx = overlay.getContext("2d");
@@ -727,7 +784,11 @@ function parseScript() {
   const re = /\S+/g;
   let m;
   while ((m = re.exec(raw)) !== null) {
-    const text = m[0].replace(/[^\p{L}\p{N}'’\-]/gu, "").toUpperCase();
+    /* \p{M} matters as much as \p{L} here. In Sinhala and Tamil the vowel
+       signs and the virama are combining marks, not letters, so a filter of
+       letters alone quietly ate them: කොළඹ came through as කළඹ. Latin never
+       noticed because it keeps its vowels inside its letters. */
+    const text = captionCase(m[0].replace(/[^\p{L}\p{M}\p{N}'’\-]/gu, ""));
     // pos = where this word starts in the raw script, so speech boundary
     // events (which report a character index) can be mapped back to it.
     if (text) next.push({ raw: m[0], text, pos: m.index, start: null, end: null,
@@ -1452,8 +1513,9 @@ function drawCaptions(ctx, W, H, t) {
   let fontPx = (S.sizePct / 100) * H;
   const maxW = W * 0.88;
 
+  const face = fontFor(words.map(w => w.text).join(""));
   const measure = () => {
-    ctx.font = fontPx + "px " + FONT_STACK;
+    ctx.font = fontPx + "px " + face;
     const ws = words.map(w => ctx.measureText(w.text).width);
     const gap = fontPx * 0.28;
     return { ws, gap, total: ws.reduce((a, b) => a + b, 0) + gap * (words.length - 1) };
@@ -1721,7 +1783,8 @@ function buildASS() {
   L.push("");
   L.push("[V4+ Styles]");
   L.push("Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding");
-  L.push("Style: Karaoke,Anton," + fontSize + ",&H00FFFFFF,&H000000FF,&H00000000,&H73000000,0,0,0,0,100,100,0,0,1," +
+  L.push("Style: Karaoke," + assFontFor(S.words.map(w => w.text).join("")) + "," + fontSize +
+         ",&H00FFFFFF,&H000000FF,&H00000000,&H73000000,0,0,0,0,100,100,0,0,1," +
          outline + "," + shadow + ",5,40,40,40,1");
   L.push("");
   L.push("[Events]");
@@ -2594,6 +2657,7 @@ if (!CAN_RECORD) {
 if (document.fonts && document.fonts.load) {
   document.fonts.load('400 100px Anton', 'AA').catch(() => {});
 }
+
 parseScript();
 applyPlatform(platform);
 setMode("own");   // most clips arrive with their voice already in them
@@ -3694,12 +3758,13 @@ function drawEndCard(ctx, W, H, progress) {
   ctx.fillStyle = "rgba(8,12,16," + (0.55 + 0.35 * Math.min(1, progress * 3)) + ")";
   ctx.fillRect(0, 0, W, H);
 
+  const cardFace = fontFor(String(line1 || "") + String(line2 || ""));
   const fit = (text, targetPx, maxW) => {
     let px = targetPx;
-    ctx.font = px + "px " + FONT_STACK;
+    ctx.font = px + "px " + cardFace;
     while (ctx.measureText(text).width > maxW && px > 10) {
       px *= maxW / ctx.measureText(text).width;
-      ctx.font = px + "px " + FONT_STACK;
+      ctx.font = px + "px " + cardFace;
     }
     return px;
   };
@@ -3708,17 +3773,18 @@ function drawEndCard(ctx, W, H, progress) {
   ctx.textBaseline = "middle";
   ctx.lineJoin = "round";
 
-  const big = fit(line1.toUpperCase(), H * 0.075, W * 0.84);
-  ctx.font = big + "px " + FONT_STACK;
+  const headline = captionCase(line1);
+  const big = fit(headline, H * 0.075, W * 0.84);
+  ctx.font = big + "px " + cardFace;
   ctx.lineWidth = big * 0.17;
   ctx.strokeStyle = "#000";
-  ctx.strokeText(line1.toUpperCase(), W / 2, H * 0.46);
+  ctx.strokeText(headline, W / 2, H * 0.46);
   ctx.fillStyle = S.hlColor || "#FFD400";
-  ctx.fillText(line1.toUpperCase(), W / 2, H * 0.46);
+  ctx.fillText(headline, W / 2, H * 0.46);
 
   if (line2) {
     const small = fit(line2, H * 0.038, W * 0.8);
-    ctx.font = small + "px " + FONT_STACK;
+    ctx.font = small + "px " + cardFace;
     ctx.lineWidth = small * 0.17;
     ctx.strokeStyle = "#000";
     ctx.strokeText(line2, W / 2, H * 0.56);
@@ -3843,6 +3909,26 @@ const TTS_VOICES = [
   { id: "Sulafat",       label: "Sulafat — warm",                  group: "More voices" },
 ];
 
+/* Who is in the scene, or null when it is just the one narrator. The names are
+   what the model matches against the script, so a blank or duplicated one is
+   no scene at all. */
+function twoSpeakers() {
+  if (!$("twoVoices") || !$("twoVoices").checked) return null;
+  const a = ($("spk1Name").value || "").trim();
+  const b = ($("spk2Name").value || "").trim();
+  if (!a || !b || a.toLowerCase() === b.toLowerCase()) return null;
+  return [
+    { name: a, voice: $("spk1Voice").value || "Puck" },
+    { name: b, voice: $("spk2Voice").value || "Charon" }
+  ];
+}
+
+/* Does the script actually give these two anything to say? */
+function hasTurnsFor(text, cast) {
+  const esc = n => n.replace(/[.*+?^${}()|[\]\\]/g, m => "\\" + m);
+  return new RegExp("^\\s*(" + cast.map(c => esc(c.name)).join("|") + ")\\s*:", "im").test(text);
+}
+
 function setAiVoiceStatus(msg, kind) {
   const el = $("aiVoiceStatus");
   if (!el) return;
@@ -3886,6 +3972,16 @@ async function makeVoiceFile() {
 
   const voice = $("aiVoice").value || "Kore";
   const style = ($("aiVoiceStyle").value || "").trim();
+  const cast = twoSpeakers();
+
+  /* The model pairs the names in speechConfig with the names in the text. A
+     script with no turns would come back as one voice reading the whole thing,
+     so say that now rather than after the wait and the spend. */
+  if (cast && !hasTurnsFor(text, cast)) {
+    setAiVoiceStatus("Two speakers are on, but the script has no lines for them. Write it as \"" +
+      cast[0].name + ": ...\" and \"" + cast[1].name + ": ...\", one turn per line.", "warn");
+    return;
+  }
 
   startAiClock(btn, "Speaking your script");
   setAiVoiceStatus("");
@@ -3911,7 +4007,12 @@ async function makeVoiceFile() {
               contents: [{ role: "user", parts: [{ text: style ? `${style}: ${text}` : text }] }],
               generationConfig: {
                 responseModalities: ["AUDIO"],
-                speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } }
+                speechConfig: cast
+                  ? { multiSpeakerVoiceConfig: { speakerVoiceConfigs: cast.map(c => ({
+                      speaker: c.name,
+                      voiceConfig: { prebuiltVoiceConfig: { voiceName: c.voice } }
+                    })) } }
+                  : { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } }
               }
             })
           }
@@ -3952,7 +4053,8 @@ async function makeVoiceFile() {
 
     // Hand it over as THE voiceover, then switch to the tab that shows it,
     // so what happens next is visible rather than silently rearranged.
-    useVoiceover(wav, "voice-" + voice.toLowerCase() + ".wav");
+    useVoiceover(wav, "voice-" +
+      (cast ? cast.map(c => c.name.toLowerCase()).join("-") : voice.toLowerCase()) + ".wav");
     setMode("file");
     stopAiClock(btn, "✅ Voice made", 2600);
     /* Any timing from before this voice existed was taken against a
@@ -3984,7 +4086,16 @@ const VOICE_STYLES = [
   { name: "Calm explainer", text: "calm and clear, unhurried, like explaining it to a friend" },
   { name: "Urgent",         text: "urgent and intense, low and serious" },
   { name: "Storyteller",    text: "warm and unhurried, like telling a story" },
-  { name: "Deadpan",        text: "flat and deadpan, completely straight-faced" }
+  { name: "Deadpan",        text: "flat and deadpan, completely straight-faced" },
+  /* The direction does not have to hold for the whole script — the model will
+     change delivery partway through if you ask it to, and a read that turns is
+     what makes a hook land. Nothing in the old one-line box suggested this. */
+  { name: "Hook, then tell",
+    text: "say the first line as an urgent whisper, then relax and tell the rest normally" },
+  { name: "Build to it",
+    text: "start flat and bored, get faster and more excited with every line" },
+  { name: "Land the last line",
+    text: "read it briskly, then slow right down and land the final line hard" }
 ];
 
 if ($("aiVoice")) {
@@ -4029,9 +4140,21 @@ async function runPipeline(topic, opts) {
 
   if (topic) {
     report("Writing the script…");
-    const prompt = `Write a highly engaging, 30-second script for a TikTok/Reels video about: "${topic}". ` +
-                   `Start with a strong hook. Keep sentences short and punchy. ` +
-                   `Return ONLY the spoken script text, no punctuation or markdown.`;
+    /* When two people are in the scene the script has to be written as turns,
+       or the voice call gets a monologue and reads both parts in one voice. */
+    const cast = twoSpeakers();
+    const inLang = (opts && opts.lang)
+      ? ` Write it entirely in ${opts.lang}, in that language's own script, not transliterated.`
+      : "";
+    const prompt = cast
+      ? `Write a 30-second TikTok/Reels script about: "${topic}", as a conversation ` +
+        `between two people called ${cast[0].name} and ${cast[1].name}. ` +
+        `Open on a hook in the first line. Keep every turn short and spoken, and alternate them. ` +
+        `Return ONLY the dialogue, one turn per line, each line exactly "Name: what they say". ` +
+        `No stage directions, no markdown, no other punctuation than what is spoken.` + inLang
+      : `Write a highly engaging, 30-second script for a TikTok/Reels video about: "${topic}". ` +
+        `Start with a strong hook. Keep sentences short and punchy. ` +
+        `Return ONLY the spoken script text, no punctuation or markdown.` + inLang;
     scriptEl.value = await callGeminiApi(prompt);
     parseScript();
   }
@@ -4081,11 +4204,13 @@ async function autoMakeVideo() {
   const render = !!($("autoRender") && $("autoRender").checked);
   btn.disabled = true;
   try {
+    const lang = $("autoLang") ? $("autoLang").value : "";
     const n = await runPipeline(topic, {
       report: set,
       voice: $("autoVoice").value,
+      lang: lang,
       render: render,
-      name: topic ? topicSlug(topic) : null
+      name: topic ? topicSlug(topic) + (lang ? "-" + lang.toLowerCase() : "") : null
     });
     if (render) {
       set(`Done — ${n} words timed, and the MP4 is in your downloads.`, "ok");
@@ -4120,27 +4245,40 @@ async function runBatch() {
     return;
   }
 
+  /* Every topic, in every language that is lit. Two topics in three languages
+     is six videos, and each one is a full pass of its own. */
+  const langs = $("batchLangs")
+    ? [...$("batchLangs").children].filter(b => b.getAttribute("aria-pressed") === "true")
+        .map(b => b.dataset.lang)
+    : [""];
+  if (!langs.length) { set("Pick at least one language.", "warn"); return; }
+
+  const jobs = [];
+  topics.forEach(t => langs.forEach(l => jobs.push({ topic: t, lang: l })));
+
   btn.disabled = true;
   const failed = [];
   let made = 0;
   try {
-    for (let i = 0; i < topics.length; i++) {
-      const t = topics[i];
-      const tag = "[" + (i + 1) + "/" + topics.length + "] " + t.slice(0, 38) + " — ";
+    for (let i = 0; i < jobs.length; i++) {
+      const { topic: t, lang: l } = jobs[i];
+      const label = t.slice(0, 32) + (l ? " (" + l + ")" : "");
+      const tag = "[" + (i + 1) + "/" + jobs.length + "] " + label + " — ";
       try {
         await runPipeline(t, {
           report: m => set(tag + m),
           voice: $("autoVoice").value,
+          lang: l,
           render: true,
-          name: topicSlug(t)
+          name: topicSlug(t) + (l ? "-" + l.toLowerCase() : "")
         });
         made++;
       } catch (e) {
-        /* One bad topic should not take the other nine down with it. */
-        failed.push(t.slice(0, 38) + " (" + String((e && e.message) || e).slice(0, 70) + ")");
+        /* One bad job should not take the other five down with it. */
+        failed.push(label + " (" + String((e && e.message) || e).slice(0, 60) + ")");
       }
     }
-    set(made + " of " + topics.length + " rendered." +
+    set(made + " of " + jobs.length + " rendered." +
         (failed.length ? " Did not finish: " + failed.join("; ")
                        : " They are all in your downloads."),
         failed.length ? "warn" : "ok");
@@ -4154,7 +4292,28 @@ if ($("btnAutoMake")) {
   if ($("autoVoice") && $("aiVoice")) $("autoVoice").innerHTML = $("aiVoice").innerHTML;
   $("btnAutoMake").addEventListener("click", autoMakeVideo);
 }
+if ($("batchLangs")) {
+  $("batchLangs").addEventListener("click", e => {
+    const b = e.target.closest("button[data-lang]");
+    if (!b) return;
+    b.setAttribute("aria-pressed", b.getAttribute("aria-pressed") === "true" ? "false" : "true");
+  });
+}
 if ($("btnBatchRun")) $("btnBatchRun").addEventListener("click", runBatch);
+
+if ($("twoVoices")) {
+  /* Both lists are built from the narrator list, so a voice cannot exist in
+     one place and be missing from another. */
+  ["spk1Voice", "spk2Voice"].forEach((id, i) => {
+    if ($(id) && $("aiVoice")) {
+      $(id).innerHTML = $("aiVoice").innerHTML;
+      $(id).value = i === 0 ? "Puck" : "Charon";
+    }
+  });
+  $("twoVoices").addEventListener("change", e => {
+    $("twoVoiceRow").style.display = e.target.checked ? "" : "none";
+  });
+}
 
 if ($("aiVoiceStyles")) {
   const box = $("aiVoiceStyles"), input = $("aiVoiceStyle");
@@ -4263,12 +4422,12 @@ if ($("btnTranscribe")) {
       const timings = await callGeminiApi(prompt, audioBlob, schema);
       if (Array.isArray(timings) && timings.length > 0) {
         S.words = timings.map(t => ({
-          text: t.word.toUpperCase(),
+          text: captionCase(t.word),
           start: t.start,
           end: t.end,
           key: false
         }));
-        scriptEl.value = timings.map(t => t.word.toUpperCase()).join(" ");
+        scriptEl.value = timings.map(t => captionCase(t.word)).join(" ");
         renderChips();
         refreshExports();
         btn.textContent = "✅ Transcribed!";

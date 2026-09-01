@@ -14,7 +14,10 @@
   --caption-yellow:#ffd400;
   --radius:10px;
   --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Consolas,monospace;
-  --display:"Anton","Arial Narrow",Impact,Haettenschweiler,sans-serif;
+  /* Anton has no Sinhala or Tamil glyphs. CSS falls back per glyph, so
+     naming the two Noto faces here keeps the word chips looking like the
+     video they describe rather than like whatever the system reached for. */
+  --display:"Anton","Noto Sans Sinhala","Noto Sans Tamil","Arial Narrow",Impact,Haettenschweiler,sans-serif;
   --ui:"Inter",-apple-system,"Segoe UI",system-ui,sans-serif;
 }
 *{box-sizing:border-box}
