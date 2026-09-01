@@ -660,18 +660,68 @@ function paintScrub() {
    larger is bytes nobody sees: a 1440-wide clip carries 78% more pixels
    than 1080 and is re-encoded down on upload anyway. Cap it, keeping the
    shape, and round to even numbers because encoders require it. */
-const MAX_OUT_WIDTH = 1080, MAX_OUT_HEIGHT = 1920;
+/* Vertical video is named by its short edge: "1080p" is 1080 across and 1920
+   tall. The export used to be pinned to that and nothing else, so a 4K clip
+   was quietly thrown away on the way out. */
+const QUALITY_SHORT_EDGE = { "720": 720, "1080": 1080, "1440": 1440, "2160": 2160 };
+const HARD_SHORT_EDGE = 2160;          // past this, H.264 in a browser stops being reliable
+
+function chosenQuality() {
+  return ($("outQuality") && $("outQuality").value) || "1080";
+}
+
+/* Even numbers only — H.264 chroma is subsampled and refuses odd dimensions. */
+function evenPair(w, h) {
+  return { w: Math.max(2, Math.round(w / 2) * 2), h: Math.max(2, Math.round(h / 2) * 2) };
+}
+
+function sourceSize() {
+  const first = S.clips[0];
+  return {
+    w: (first && first.el.videoWidth) || video.videoWidth || 1080,
+    h: (first && first.el.videoHeight) || video.videoHeight || 1920
+  };
+}
 
 function outputSize() {
-  const first = S.clips[0];
-  let w = (first && first.el.videoWidth) || video.videoWidth || 1080;
-  let h = (first && first.el.videoHeight) || video.videoHeight || 1920;
-  const scale = Math.min(1, MAX_OUT_WIDTH / w, MAX_OUT_HEIGHT / h);
-  if (scale < 1) {
-    w = Math.round(w * scale / 2) * 2;
-    h = Math.round(h * scale / 2) * 2;
-  }
-  return { w, h };
+  const src = sourceSize();
+  const pick = chosenQuality();
+  /* "Match the clip" still has a ceiling: the aspect is kept, but nothing goes
+     out larger than a browser encoder will reliably take. */
+  const target = pick === "auto"
+    ? Math.min(Math.min(src.w, src.h), HARD_SHORT_EDGE)
+    : (QUALITY_SHORT_EDGE[pick] || 1080);
+  const scale = target / Math.min(src.w, src.h);
+  return evenPair(src.w * scale, src.h * scale);
+}
+
+/* The canvas the editor draws on. Never larger than 1080 across, whatever the
+   export is set to. */
+function previewSize() {
+  const src = sourceSize();
+  const scale = Math.min(1, 1080 / Math.min(src.w, src.h));
+  return evenPair(src.w * scale, src.h * scale);
+}
+
+/* Eight megabits was hardcoded, which is about right for 1080×1920 and wrong
+   in both directions everywhere else — 4K starves and 720p is wasteful. Hold
+   the bits per pixel steady instead and let the number follow the frame. */
+function bitrateFor(w, h, fps) {
+  return Math.round(Math.min(45e6, Math.max(2.5e6, w * h * fps * 0.13)));
+}
+
+/* Say what the choice actually costs, before it is made. */
+function updateQualityNote() {
+  const el = $("qualityNote");
+  if (!el) return;
+  if (!S.clips.length) { el.textContent = "Add a clip in step 1 and this will show the size you will get."; return; }
+  const src = sourceSize();
+  const out = outputSize();
+  const mbps = (bitrateFor(out.w, out.h, 30) / 1e6).toFixed(1);
+  const up = Math.min(out.w, out.h) > Math.min(src.w, src.h) + 2;
+  el.textContent =
+    `Your clip is ${src.w}×${src.h}. This exports ${out.w}×${out.h} at about ${mbps} Mbps.` +
+    (up ? " That is larger than the clip, so it will be a bigger file with no more detail in it." : "");
 }
 
 /* Fit a clip into the output frame without distorting it. */
@@ -685,7 +735,12 @@ function drawClipFitted(ctx, el, W, H) {
 }
 
 video.addEventListener("loadedmetadata", () => {
-  const { w, h } = outputSize();
+  /* The preview is drawn every frame and displayed a few hundred pixels wide,
+     so it does not follow the export up to 4K — that would be eight million
+     pixels of canvas redrawn continuously to look identical. Everything about
+     a caption is a percentage of the frame, so a smaller preview is the same
+     picture, and the export still renders at whatever was chosen. */
+  const { w, h } = previewSize();
   overlay.width = w;
   overlay.height = h;
   syncTransport();
@@ -1990,7 +2045,7 @@ async function pickH264(width, height, framerate) {
   for (const codec of tries) {
     try {
       const s = await VideoEncoder.isConfigSupported({
-        codec, width, height, bitrate: 8e6, framerate
+        codec, width, height, bitrate: bitrateFor(width, height, framerate), framerate
       });
       if (s.supported) return codec;
     } catch (e) {}
@@ -2252,7 +2307,7 @@ async function gatherExportAudio(sr) {
    wait for it, draw, encode. Nothing depends on playback keeping up.
    ============================================================ */
 async function renderMp4() {
-  const { w: W, h: H } = outputSize();
+  let { w: W, h: H } = outputSize();
   const FPS = 30, SR = 48000, CH = 1;
   const dur = totalTime();
   const cardSecs = endCardSeconds();
@@ -2260,7 +2315,25 @@ async function renderMp4() {
   let frameCount = Math.max(1, Math.round((dur + cardSecs) * FPS));
 
   const { Muxer, ArrayBufferTarget } = await getMuxer();
-  const codec = await pickH264(W, H, FPS);
+  /* Not every machine will encode 4K H.264, and finding that out after the
+     render would waste the whole wait. Ask first, and walk down the ladder
+     rather than refusing outright. */
+  let codec = await pickH264(W, H, FPS);
+  if (!codec) {
+    const src = sourceSize();
+    const asked = W + "×" + H;
+    for (const edge of [1440, 1080, 720]) {
+      if (edge >= Math.min(W, H)) continue;
+      const step = evenPair(src.w * (edge / Math.min(src.w, src.h)),
+                            src.h * (edge / Math.min(src.w, src.h)));
+      codec = await pickH264(step.w, step.h, FPS);
+      if (codec) {
+        W = step.w; H = step.h;
+        say(`This browser will not encode H.264 at ${asked}, so the video is ${W}×${H} instead.`, "warn");
+        break;
+      }
+    }
+  }
   if (!codec) throw new Error("This browser won't encode H.264 at " + W + "×" + H + ".");
 
   /* Where the sound comes from depends on which voice is in use. A spoken
@@ -2323,7 +2396,7 @@ async function renderMp4() {
     output: (c, m) => muxer.addVideoChunk(c, m),
     error: e => { encErr = e; }
   });
-  venc.configure({ codec, width: W, height: H, bitrate: 8e6, framerate: FPS });
+  venc.configure({ codec, width: W, height: H, bitrate: bitrateFor(W, H, FPS), framerate: FPS });
 
   let aenc = null;
   if (pcm) {
@@ -2482,6 +2555,10 @@ async function exportMp4() {
   }
 }
 
+if ($("outQuality")) {
+  $("outQuality").addEventListener("change", () => { updateQualityNote(); saveSessionState(); });
+  updateQualityNote();
+}
 if ($("btnExportMp4")) $("btnExportMp4").addEventListener("click", exportMp4);
 
 /* ============================================================
@@ -4691,6 +4768,7 @@ function saveSessionState() {
          before the whole set is written out. */
       endCards: (stashEndCard(platform), END_CARDS),
       endCardPic: S.endCardPic || null,
+      quality: chosenQuality(),
       platform: platform,
       updatedAt: Date.now()
     };
@@ -4726,6 +4804,7 @@ function loadSessionState() {
       applyPlatform(data.platform && PLATFORMS[data.platform] ? data.platform : platform);
     }
     if (data.endCardPic) setEndCardPic(data.endCardPic, "saved picture");
+    if (data.quality && $("outQuality")) { $("outQuality").value = data.quality; updateQualityNote(); }
     if (data.animStyle) {
       S.animStyle = data.animStyle;
       if ($("captionAnimStyle")) $("captionAnimStyle").value = data.animStyle;

@@ -442,6 +442,17 @@
     <button id="btnExportFbSrt">Save captions for Facebook<small>Named the way Facebook demands</small></button>
     <button id="btnExportJson">Save .JSON timings<small>Raw word timestamps array</small></button>
     <button id="btnTestSound">🔊 Test the sound first<small>5 seconds · checks your voice can be recorded</small></button>
+    <div class="field" style="margin-top:2px">
+      <label for="outQuality">Video quality</label>
+      <select id="outQuality">
+        <option value="720">720p — 720 × 1280 · smallest file</option>
+        <option value="1080" selected>1080p — 1080 × 1920 · what every platform wants</option>
+        <option value="1440">2K — 1440 × 2560</option>
+        <option value="2160">4K — 2160 × 3840 · slow to render, large file</option>
+        <option value="auto">Match the clip</option>
+      </select>
+      <p class="hint" id="qualityNote" style="margin:6px 0 0;font-size:11.5px"></p>
+    </div>
     <button id="btnExportMp4" class="primary wide">Save as MP4 — ready to upload<small>Video + captions + voice · what Facebook, TikTok and YouTube want</small></button>
     <button id="btnExportWebm">Save as .WEBM instead<small>Fallback if the MP4 will not build</small></button>
   </div>
