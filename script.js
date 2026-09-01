@@ -12,6 +12,7 @@ const S = {
   hlColor: "#FFD400",
   emphasise: false,         // pick out the meaningful words
   keyColor: "#FF8A3D",
+  endCardPic: null,         // the profile picture, squared and shrunk, as a data URL
   hasAudio: false,          // a voiceover FILE is loaded
   voiceoverBlob: null,      // that voiceover's bytes, wherever it came from
   voMode: "generated",      // "generated" (spoken here) or "file"
@@ -1611,7 +1612,10 @@ const PLATFORMS = {
     maxSeconds: 90,
     captionExt: ".en_US.srt",
     captionNote: "Facebook takes only .srt, and only when the name ends .en_US.srt.",
-    lengthNote: "Reels run up to 90 seconds."
+    lengthNote: "Reels run up to 90 seconds.",
+    /* You do not subscribe to a Facebook page and you do not follow a YouTube
+       channel, so one shared end card was always going to be wrong somewhere. */
+    cardText: "Follow the page", cardWhat: "page"
   },
   youtube: {
     label: "YouTube Shorts",
@@ -1619,13 +1623,15 @@ const PLATFORMS = {
     maxSeconds: 180,
     captionExt: ".srt",
     captionNote: "YouTube takes .srt with any filename. Upload it on the video's subtitles page.",
-    lengthNote: "Shorts run up to 3 minutes; anything longer becomes a normal video."
+    lengthNote: "Shorts run up to 3 minutes; anything longer becomes a normal video.",
+    cardText: "Subscribe the channel", cardWhat: "channel"
   },
   tiktok: {
     label: "TikTok",
     safe: { top: 0.10, bottom: 0.26, right: 0.16 },
     maxSeconds: 600,
     captionExt: ".srt",
+    cardText: "Follow for more", cardWhat: "account",
     captionNote: "TikTok takes .srt on upload, under “Show more”.",
     lengthNote: "TikTok allows up to 10 minutes, but short still holds attention best."
   }
@@ -1675,7 +1681,7 @@ function safeZoneVerdict(H) {
   const topLine = H * SAFE.top, bottomLine = H * (1 - SAFE.bottom);
   if (band.bottom > bottomLine) {
     const over = Math.round(((band.bottom - bottomLine) / H) * 100);
-    return { ok: false, msg: `Captions run ${over}% into ${plat().label}'s button area — raise “Height on frame” until this clears.` };
+    return { ok: false, msg: `Captions run ${over}% into ${possessive(plat().label)} button area — raise “Height on frame” until this clears.` };
   }
   if (band.top < topLine) {
     return { ok: false, msg: `Captions run into ${plat().label}'s top bar — lower “Height on frame”.` };
@@ -1857,8 +1863,39 @@ bindExportBtn("expFbSrt", "btnExportFbSrt", () => {
 });
 
 /* ---------- platform picker ---------- */
+/* What each platform's end card says. Filled from the platform's own defaults
+   the first time it is opened, and kept as edited after that. */
+const END_CARDS = {};
+function endCardFor(key) {
+  if (!END_CARDS[key]) {
+    END_CARDS[key] = { text: (PLATFORMS[key] && PLATFORMS[key].cardText) || "Follow for more", handle: "" };
+  }
+  return END_CARDS[key];
+}
+function stashEndCard(key) {
+  if (!key || !$("endCardText")) return;
+  const c = endCardFor(key);
+  c.text = $("endCardText").value;
+  c.handle = $("endCardHandle").value;
+}
+function loadEndCard(key) {
+  if (!$("endCardText")) return;
+  const c = endCardFor(key);
+  $("endCardText").value = c.text;
+  $("endCardHandle").value = c.handle;
+  const p = PLATFORMS[key] || {};
+  $("endCardHandle").placeholder = key === "youtube" ? "e.g. @TheBodyMechanicz" : "e.g. @AnatomyDaily";
+  if ($("endCardWho")) {
+    $("endCardWho").textContent =
+      "These two lines belong to " + (p.label || key) + " — each platform keeps its own, " +
+      "because you do not subscribe to a page or follow a channel.";
+  }
+}
+
 function applyPlatform(key) {
   if (!PLATFORMS[key]) return;
+  /* Hand the outgoing platform its words back before taking the new ones. */
+  if (platform && platform !== key) stashEndCard(platform);
   platform = key;
   SAFE = plat().safe;
   try { localStorage.setItem("captionStudio.platform", key); } catch (e) {}
@@ -1874,8 +1911,14 @@ function applyPlatform(key) {
     const small = btn.querySelector("small");
     if (small) small.textContent = plat().captionExt.replace(/^\./, "") + " · named the way it wants";
   }
+  loadEndCard(key);
+  if ($("safeWho")) $("safeWho").textContent = plat().label;
   updatePlatformNote();
   updateSafeZoneWarning();
+}
+
+function possessive(name) {
+  return /s$/i.test(name) ? name + "\u2019" : name + "\u2019s";
 }
 
 function updatePlatformNote() {
@@ -3750,9 +3793,14 @@ function endCardSeconds() {
   return (on && on.checked) ? Math.max(0.6, Math.min(3, parseFloat($("endCardSecs").value) || 1.2)) : 0;
 }
 
+/* The decoded picture, ready to draw. Kept decoded because the renderer draws
+   frames one after another with no chance to wait for an image to load. */
+let endCardImg = null;
+
 function drawEndCard(ctx, W, H, progress) {
-  const line1 = ($("endCardText").value || "Follow for more").trim();
+  const line1 = ($("endCardText").value || plat().cardText || "Follow for more").trim();
   const line2 = ($("endCardHandle").value || "").trim();
+  const pic = (endCardImg && endCardImg.complete && endCardImg.naturalWidth) ? endCardImg : null;
 
   ctx.save();
   ctx.fillStyle = "rgba(8,12,16," + (0.55 + 0.35 * Math.min(1, progress * 3)) + ")";
@@ -3773,23 +3821,50 @@ function drawEndCard(ctx, W, H, progress) {
   ctx.textBaseline = "middle";
   ctx.lineJoin = "round";
 
+  /* With a face on the card everything below it shifts down to make room; with
+     no picture the wording sits exactly where it always did. */
+  const yHead = pic ? 0.545 : 0.46;
+  const yHandle = pic ? 0.625 : 0.56;
+
+  if (pic) {
+    const r = H * 0.085;
+    const cx = W / 2, cy = H * 0.40;
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.closePath();
+    ctx.clip();
+    /* Cover, not stretch: a rectangular avatar should be cropped square, not
+       squashed into an oval. */
+    const scale = Math.max(r * 2 / pic.naturalWidth, r * 2 / pic.naturalHeight);
+    const dw = pic.naturalWidth * scale, dh = pic.naturalHeight * scale;
+    ctx.drawImage(pic, cx - dw / 2, cy - dh / 2, dw, dh);
+    ctx.restore();
+
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.lineWidth = Math.max(2, r * 0.085);
+    ctx.strokeStyle = S.hlColor || "#FFD400";
+    ctx.stroke();
+  }
+
   const headline = captionCase(line1);
   const big = fit(headline, H * 0.075, W * 0.84);
   ctx.font = big + "px " + cardFace;
   ctx.lineWidth = big * 0.17;
   ctx.strokeStyle = "#000";
-  ctx.strokeText(headline, W / 2, H * 0.46);
+  ctx.strokeText(headline, W / 2, H * yHead);
   ctx.fillStyle = S.hlColor || "#FFD400";
-  ctx.fillText(headline, W / 2, H * 0.46);
+  ctx.fillText(headline, W / 2, H * yHead);
 
   if (line2) {
     const small = fit(line2, H * 0.038, W * 0.8);
     ctx.font = small + "px " + cardFace;
     ctx.lineWidth = small * 0.17;
     ctx.strokeStyle = "#000";
-    ctx.strokeText(line2, W / 2, H * 0.56);
+    ctx.strokeText(line2, W / 2, H * yHandle);
     ctx.fillStyle = "#FFFFFF";
-    ctx.fillText(line2, W / 2, H * 0.56);
+    ctx.fillText(line2, W / 2, H * yHandle);
   }
   ctx.restore();
 }
@@ -4539,6 +4614,61 @@ if ($("colorPresets")) {
   });
 }
 
+/* The picture is squared off and shrunk before it is kept. A phone photo is
+   several megabytes and the card draws it the size of a thumbnail, so storing
+   the original would blow the auto-save budget for no visible gain. */
+function setEndCardPic(dataUrl, name) {
+  if (!dataUrl) {
+    endCardImg = null;
+    S.endCardPic = null;
+    if ($("endCardPicName")) { $("endCardPicName").textContent = "no picture"; $("endCardPicName").classList.add("none"); }
+    if ($("endCardPicClear")) $("endCardPicClear").style.display = "none";
+    return;
+  }
+  const img = new Image();
+  img.onload = () => { endCardImg = img; };
+  img.src = dataUrl;
+  S.endCardPic = dataUrl;
+  if ($("endCardPicName")) { $("endCardPicName").textContent = name || "picture set"; $("endCardPicName").classList.remove("none"); }
+  if ($("endCardPicClear")) $("endCardPicClear").style.display = "";
+}
+
+function readEndCardPic(file) {
+  const fr = new FileReader();
+  fr.onload = () => {
+    const img = new Image();
+    img.onload = () => {
+      const SIDE = 320;                       // plenty for a circle a tenth of the frame high
+      const side = Math.min(img.naturalWidth, img.naturalHeight);
+      const c = document.createElement("canvas");
+      c.width = c.height = SIDE;
+      const cx = c.getContext("2d");
+      cx.drawImage(img, (img.naturalWidth - side) / 2, (img.naturalHeight - side) / 2,
+                   side, side, 0, 0, SIDE, SIDE);
+      setEndCardPic(c.toDataURL("image/jpeg", 0.86), file.name);
+      saveSessionState();
+    };
+    img.onerror = () => say("That image could not be read — try a JPG or PNG.", "warn");
+    img.src = fr.result;
+  };
+  fr.onerror = () => say("That image could not be read — try a JPG or PNG.", "warn");
+  fr.readAsDataURL(file);
+}
+
+if ($("endCardPic")) {
+  $("endCardPic").addEventListener("change", e => {
+    const f = e.target.files && e.target.files[0];
+    if (f) readEndCardPic(f);
+  });
+}
+if ($("endCardPicClear")) {
+  $("endCardPicClear").addEventListener("click", () => {
+    if ($("endCardPic")) $("endCardPic").value = "";
+    setEndCardPic(null);
+    saveSessionState();
+  });
+}
+
 /* ============================================================
    Auto-Save & Session Persistence (localStorage)
    ============================================================ */
@@ -4557,6 +4687,11 @@ function saveSessionState() {
       sizePct: S.sizePct,
       posPct: S.posPct,
       rate: S.rate,
+      /* The words belong to the platform, so the current box is folded back in
+         before the whole set is written out. */
+      endCards: (stashEndCard(platform), END_CARDS),
+      endCardPic: S.endCardPic || null,
+      platform: platform,
       updatedAt: Date.now()
     };
     localStorage.setItem(AUTO_SAVE_KEY, JSON.stringify(data));
@@ -4579,6 +4714,18 @@ function loadSessionState() {
     if (Array.isArray(data.words) && data.words.length > 0) {
       S.words = data.words;
     }
+    /* Restore every platform's wording, then let applyPlatform put the right
+       one in the boxes — otherwise switching tabs would wipe what came back. */
+    if (data.endCards && typeof data.endCards === "object") {
+      Object.keys(data.endCards).forEach(k => {
+        if (PLATFORMS[k]) END_CARDS[k] = {
+          text: String(data.endCards[k].text || ""),
+          handle: String(data.endCards[k].handle || "")
+        };
+      });
+      applyPlatform(data.platform && PLATFORMS[data.platform] ? data.platform : platform);
+    }
+    if (data.endCardPic) setEndCardPic(data.endCardPic, "saved picture");
     if (data.animStyle) {
       S.animStyle = data.animStyle;
       if ($("captionAnimStyle")) $("captionAnimStyle").value = data.animStyle;
