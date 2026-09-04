@@ -4801,9 +4801,11 @@ if ($("endCardPicClear")) {
    ============================================================ */
 const AUTO_SAVE_KEY = "captionStudio_savedSession";
 
-function saveSessionState() {
-  try {
-    const data = {
+/* Everything worth keeping about an edit, as one object. Pulled out of
+   saveSessionState so that the copy kept in this browser and the copy kept on
+   the server are built by the same line of code rather than by two that drift. */
+function sessionPayload() {
+  return {
       scriptText: scriptEl ? scriptEl.value : "",
       words: S.words,
       animStyle: S.animStyle,
@@ -4821,8 +4823,12 @@ function saveSessionState() {
       quality: chosenQuality(),
       platform: platform,
       updatedAt: Date.now()
-    };
-    localStorage.setItem(AUTO_SAVE_KEY, JSON.stringify(data));
+  };
+}
+
+function saveSessionState() {
+  try {
+    localStorage.setItem(AUTO_SAVE_KEY, JSON.stringify(sessionPayload()));
     showAutoSaveBadge();
   } catch (e) {
     console.warn("Auto-save failed:", e);
@@ -4901,6 +4907,172 @@ function loadSessionState() {
     console.warn("Failed to load session:", e);
     return false;
   }
+}
+
+/* ============================================================
+   Projects, kept on the server.
+
+   localStorage was one browser and about five megabytes, and it went
+   the moment someone cleared their site data. A project is the same
+   edit written somewhere it outlives the tab.
+
+   What travels is the edit, never the footage. A clip is hundreds of
+   megabytes; storing other people's video is a decision to take on
+   purpose, with a bill attached, and not one to back into by putting
+   it in a database row. The project remembers what the clips were
+   called so it can tell you which ones to put back.
+   ============================================================ */
+let openProjectId = null;
+let openProjectName = "";
+
+const csUser = () => (window.CS && CS.ai && CS.ai.user) || null;
+
+function projectStatus(msg, kind) {
+  const el = $("projectStatus");
+  if (el) { el.className = "status" + (kind ? " " + kind : ""); el.textContent = msg || ""; }
+}
+
+async function projectsApi(method, path, body) {
+  const res = await fetch("/api/projects" + (path || ""), {
+    method,
+    credentials: "same-origin",
+    headers: body ? { "Content-Type": "application/json" } : undefined,
+    body: body ? JSON.stringify(body) : undefined
+  });
+  let data = null;
+  try { data = await res.json(); } catch (e) {}
+  if (!res.ok) throw new Error((data && data.error) || ("Server said " + res.status + "."));
+  return data;
+}
+
+function projectRow(p) {
+  const when = new Date(p.updatedAt || 0);
+  const stamp = isNaN(when) ? "" : when.toLocaleString(undefined,
+    { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+  const clips = p.clips && p.clips.length
+    ? p.clips.length + (p.clips.length === 1 ? " clip" : " clips") + ": " + p.clips.join(", ")
+    : "no clips recorded";
+  const div = document.createElement("div");
+  div.className = "project-row" + (p.id === openProjectId ? " current" : "");
+  div.innerHTML =
+    '<div><b></b><small></small></div>' +
+    '<div class="row-actions">' +
+      '<button data-open="' + p.id + '">Open</button>' +
+      '<button class="ghost" data-del="' + p.id + '">Delete</button>' +
+    '</div>';
+  /* textContent, not innerHTML — a project name is whatever the customer typed. */
+  div.querySelector("b").textContent = p.name || "Untitled";
+  div.querySelector("small").textContent =
+    stamp + " · " + (p.words || 0) + " words · " + clips;
+  return div;
+}
+
+async function refreshProjects() {
+  const list = $("projectList");
+  if (!list) return;
+  if (!csUser()) {
+    list.innerHTML = '<p class="project-empty">Sign in to keep your work.</p>';
+    return;
+  }
+  try {
+    const { projects } = await projectsApi("GET", "");
+    list.innerHTML = "";
+    if (!projects.length) {
+      list.innerHTML = '<p class="project-empty">Nothing saved yet. Name this one above and press Save.</p>';
+      return;
+    }
+    projects.forEach(p => list.appendChild(projectRow(p)));
+  } catch (e) {
+    list.innerHTML = "";
+    projectStatus(e.message, "warn");
+  }
+}
+
+async function saveProject(asNew) {
+  if (!csUser()) { projectStatus("Sign in first — there is nowhere to save it yet.", "warn"); return; }
+  const name = ($("projectName").value || "").trim() || openProjectName || "Untitled";
+  const id = asNew ? null : openProjectId;
+  projectStatus("Saving…");
+  try {
+    const payload = {
+      name,
+      words: S.words.length,
+      clipNames: S.clips.map(c => c.name),
+      doc: sessionPayload()
+    };
+    const out = id ? await projectsApi("PUT", "/" + id, payload)
+                   : await projectsApi("POST", "", payload);
+    openProjectId = out.id;
+    openProjectName = name;
+    $("projectName").value = name;
+    projectStatus("Saved “" + name + "”.", "ok");
+    refreshProjects();
+  } catch (e) {
+    projectStatus(e.message, "warn");
+  }
+}
+
+async function openProject(id) {
+  projectStatus("Opening…");
+  try {
+    const { project } = await projectsApi("GET", "/" + id);
+    /* Hand the edit to the loader that already knows how to apply one,
+       rather than writing a second one that has to be kept in step. */
+    localStorage.setItem(AUTO_SAVE_KEY, JSON.stringify(project.doc || {}));
+    loadSessionState();
+    openProjectId = project.id;
+    openProjectName = project.name;
+    $("projectName").value = project.name;
+    const missing = (project.clips || []).length;
+    projectStatus("Opened “" + project.name + "”." +
+      (missing ? " Add " + (missing === 1 ? "its clip" : "its " + missing + " clips") +
+                 " again in step 1: " + project.clips.join(", ") : ""), "ok");
+    refreshProjects();
+  } catch (e) {
+    projectStatus(e.message, "warn");
+  }
+}
+
+async function deleteProject(id, name) {
+  if (!window.confirm("Delete “" + name + "”? This cannot be undone.")) return;
+  try {
+    await projectsApi("DELETE", "/" + id);
+    if (openProjectId === id) { openProjectId = null; openProjectName = ""; }
+    projectStatus("Deleted “" + name + "”.", "ok");
+    refreshProjects();
+  } catch (e) {
+    projectStatus(e.message, "warn");
+  }
+}
+
+if ($("projectsBtn")) {
+  $("projectsBtn").addEventListener("click", () => {
+    $("projectsModal").classList.add("open");
+    projectStatus("");
+    refreshProjects();
+  });
+  $("projectsCloseBtn").addEventListener("click", () => $("projectsModal").classList.remove("open"));
+  $("projectsModal").addEventListener("click", e => {
+    if (e.target === $("projectsModal")) $("projectsModal").classList.remove("open");
+  });
+  $("projectSaveBtn").addEventListener("click", () => saveProject(false));
+  $("projectSaveNewBtn").addEventListener("click", () => saveProject(true));
+  $("projectList").addEventListener("click", e => {
+    const open = e.target.closest("[data-open]");
+    const del = e.target.closest("[data-del]");
+    if (open) return openProject(open.dataset.open);
+    if (del) {
+      const row = del.closest(".project-row");
+      return deleteProject(del.dataset.del, row.querySelector("b").textContent);
+    }
+  });
+
+  /* The button only means anything once there is an account behind it. */
+  const syncProjectsBtn = () => {
+    $("projectsBtn").style.display = csUser() ? "" : "none";
+  };
+  if (window.CS && CS.onAccountChange) CS.onAccountChange.push(syncProjectsBtn);
+  syncProjectsBtn();
 }
 
 function clearSessionState() {

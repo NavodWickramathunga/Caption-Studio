@@ -38,7 +38,8 @@ const PLANS = {
     ttsCallsPerMonth: 10,
     ttsCharsPerCall: 1500,
     ttsCharsPerMonth: 9000,
-    textCallsPerMonth: 60
+    textCallsPerMonth: 60,
+    projects: 3
   },
   pro: {
     label: 'Pro',
@@ -46,7 +47,8 @@ const PLANS = {
     ttsCallsPerMonth: 300,
     ttsCharsPerCall: 5000,
     ttsCharsPerMonth: 400000,
-    textCallsPerMonth: 2000
+    textCallsPerMonth: 2000,
+    projects: 200
   }
 };
 

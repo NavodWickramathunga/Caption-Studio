@@ -60,6 +60,19 @@ Two features are the exception, and both are optional:
 
 Everything else — timing, captions, previews, all exports — runs offline.
 
+## Saved projects
+
+Signed in, **📁 Projects** in the header keeps your work somewhere it survives the
+browser. A project holds the script, the word timings, the look, the end cards and
+the export quality — the whole edit.
+
+It does not hold your footage. A clip is hundreds of megabytes, and storing other
+people's video is a decision with a bill attached rather than one to back into. The
+project writes down what the clips were *called*, so when you open it again it tells
+you which files to put back in step 1.
+
+The free plan keeps three projects; Pro keeps 200.
+
 ## Taking a watermark off the clip
 
 A logo burned into the footage is under everything else, so it has to come off

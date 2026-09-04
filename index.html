@@ -13,6 +13,7 @@
   <h1>Caption <em>Studio</em></h1>
   <p>Karaoke captions for vertical clips — tapped in by hand or powered by AI.</p>
   <button id="autoSaveBadge" class="api-key-btn" style="display:none;" title="Session restored from auto-save. Click to clear.">💾 Auto-Saved <span style="font-size:10px; opacity:0.8;">✕</span></button>
+  <button id="projectsBtn" class="api-key-btn" style="display:none" title="Your saved projects">📁 Projects</button>
   <button id="apiKeyBtn" class="api-key-btn">🔑 Gemini Key</button>
   <div id="acctBox" class="acct-box"></div>
   <div class="privacy">Your clips never leave this machine</div>
@@ -539,6 +540,34 @@
 </div>
 
 <!-- ============ GEMINI API KEY MODAL ============ -->
+<div class="modal-overlay" id="projectsModal">
+  <div class="modal-content">
+    <div class="modal-header">
+      <h3>Your projects</h3>
+      <button class="modal-close" id="projectsCloseBtn">&times;</button>
+    </div>
+    <p class="hint" style="margin-bottom:14px">
+      A project keeps the script, the word timings and the whole look — everything
+      except the clips themselves, which stay on your machine. Open a project and
+      re-add its footage to carry on.
+    </p>
+
+    <div class="field" style="margin-bottom:12px">
+      <label for="projectName">Name this project</label>
+      <div class="filerow">
+        <input type="text" id="projectName" class="txt" style="flex:1;min-width:180px"
+               placeholder="e.g. Isso wade hook">
+        <button id="projectSaveBtn" class="primary" style="font-size:12px">Save</button>
+        <button id="projectSaveNewBtn" class="ghost" style="font-size:12px"
+                title="Keep the open project and save this as another">Save as new</button>
+      </div>
+    </div>
+
+    <div class="status" id="projectStatus" role="status" aria-live="polite"></div>
+    <div id="projectList" class="project-list"></div>
+  </div>
+</div>
+
 <div class="modal-overlay" id="apiKeyModal">
   <div class="modal-content">
     <div class="modal-header">
