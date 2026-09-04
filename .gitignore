@@ -25,3 +25,6 @@ node_modules/
 # Secrets - the key lives here and must never be committed
 .env
 .env.local
+
+# the SQLite file and its write-ahead log
+data/

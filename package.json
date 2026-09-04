@@ -1,13 +1,16 @@
 {
   "name": "caption-studio",
   "version": "1.0.0",
-  "description": "Static site — karaoke captions for vertical clips",
+  "description": "Karaoke captions for vertical clips — editor in the browser, accounts and AI on the server",
   "scripts": {
-    "dev": "node server.js",
-    "build": "echo 'No build required for static site'",
-    "start": "node server.js"
+    "dev": "node --env-file-if-exists=.env server.js",
+    "start": "node --env-file-if-exists=.env server.js",
+    "build": "echo 'No build step — the browser runs the source directly'"
   },
   "dependencies": {
     "express": "^4.21.2"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }
