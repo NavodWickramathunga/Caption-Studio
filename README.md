@@ -60,6 +60,42 @@ Two features are the exception, and both are optional:
 
 Everything else — timing, captions, previews, all exports — runs offline.
 
+## Taking a watermark off the clip
+
+A logo burned into the footage is under everything else, so it has to come off
+before the captions go on. **Remove a watermark**, in step 1.
+
+**🔍 Find the watermark** sends three stills from each clip to Gemini and asks
+which rectangle the mark sits in. Three rather than one because a watermark is
+the thing that *doesn't* move while the footage under it does, and one frame
+cannot show that. The clip is never uploaded — three JPEGs are.
+
+The removal itself never leaves this machine. Sending nine hundred frames to a
+model would cost real money, take an hour, and flicker, because every frame
+would be invented with no memory of the one before it. Instead the picture
+around the mark is grown inward, frame by frame, which is instant and steady —
+the same input always gives the same output, so there is nothing to shimmer.
+
+Three ways to cover it:
+
+| | What it does | Where it shows |
+| --- | --- | --- |
+| **Fill it in** | Grows the surrounding picture inward over the mark, then puts back as much grain as the neighbours have | A still, flat background |
+| **Blur it** | Smears the area into itself until the mark is unreadable | Everywhere — that is the point |
+| **Block it out** | A flat patch the colour of what surrounds it | Everywhere, honestly |
+
+Every area is draggable on the preview — drag the middle to move it, the corner
+to resize, or drag on empty picture to add one Gemini missed. A box drawn by
+hand needs no key at all. Areas belong to the clip they were drawn on, so clips
+of different sizes each mark their own; tick **use these same areas on every
+clip** when the mark is in the same place throughout.
+
+What you see on the preview is what the export gets — both go through the same
+repair.
+
+> This is for footage you own or are licensed to use. Taking someone else's mark
+> off their work and posting it as yours is not what it is for.
+
 ## Getting a timing
 
 Every word needs a start and an end. Three ways to get there:

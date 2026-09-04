@@ -212,6 +212,7 @@ function afterClipsLoaded() {
   renderClipList();
   syncTransport();
   updateSafeZoneWarning();
+  wmSync();
 }
 
 /* The on-stage <video> mirrors whichever clip is current, so the preview
@@ -220,6 +221,7 @@ function showActiveClip() {
   const c = S.clips[activeClip];
   if (!c) return;
   if (video.src !== c.url) { video.src = c.url; video.load(); }
+  wmSync();
 }
 
 function removeClip(i) {
@@ -236,6 +238,7 @@ function removeClip(i) {
   } else showActiveClip();
   renderClipList();
   syncTransport();
+  wmSync();
 }
 
 function moveClip(i, dir) {
@@ -246,6 +249,7 @@ function moveClip(i, dir) {
   recomputeClipStarts();
   renderClipList();
   syncTransport();
+  wmSync();
 }
 
 /* Does this clip actually carry a voice? Answered once, on load, so the
@@ -731,7 +735,12 @@ function drawClipFitted(ctx, el, W, H) {
   const scale = Math.min(W / vw, H / vh);
   const dw = vw * scale, dh = vh * scale;
   if (dw < W || dh < H) { ctx.fillStyle = "#000"; ctx.fillRect(0, 0, W, H); }
-  ctx.drawImage(el, (W - dw) / 2, (H - dh) / 2, dw, dh);
+  const dx = (W - dw) / 2, dy = (H - dh) / 2;
+  ctx.drawImage(el, dx, dy, dw, dh);
+  /* Anything burned into the footage is repaired here, on the frame that was
+     just drawn, so the export and the screen recorder both get it without
+     either of them knowing the feature exists. */
+  repairWatermarks(ctx, el, dx, dy, dw, dh);
 }
 
 video.addEventListener("loadedmetadata", () => {
@@ -1758,6 +1767,7 @@ function frameLoop() {
   octx.clearRect(0, 0, W, H);
   if ($("showSafe") && $("showSafe").checked && W && H) drawSafeZones(octx, W, H);
   if (!video.paused) advanceClipIfEnded();
+  paintWatermarkLayer();
   if (video.src) {
     // keep the two elements from drifting apart
     if (S.hasAudio && audio.src && !audio.paused && isFinite(video.duration)) {
@@ -2854,7 +2864,20 @@ if ($("apiKeyClearBtn")) {
 }
 updateApiKeyBtnState();
 
-async function callGeminiApi(promptText, audioBlob = null, jsonSchema = null) {
+/* The second argument started life as one WAV and is now "whatever you want
+   Gemini to look at" - a blob, or a list of them, in the order they should be
+   read. The mime type comes off the blob, so a PNG goes up as a PNG. */
+async function callGeminiApi(promptText, mediaBlob = null, jsonSchema = null) {
+  /* When a server is answering, it holds the key and counts the spend,
+     so the browser never sees either. Media still goes the old way:
+     only transcription sends audio, and that is not on the paid path
+     yet. */
+  const CS = window.CS;
+  if (CS && CS.ai.mode === "server" && !mediaBlob) {
+    if (!CS.ai.user) throw new Error("Sign in to use this — the button is in the top right.");
+    return await CS.serverText(promptText, jsonSchema || undefined);
+  }
+
   const apiKey = getApiKey();
   if (!apiKey) {
     $("apiKeyModal").classList.add("open");
@@ -2863,19 +2886,22 @@ async function callGeminiApi(promptText, audioBlob = null, jsonSchema = null) {
 
   const parts = [{ text: promptText }];
 
-  if (audioBlob) {
-    const arrayBuffer = await audioBlob.arrayBuffer();
+  const media = Array.isArray(mediaBlob) ? mediaBlob.filter(Boolean)
+              : mediaBlob ? [mediaBlob] : [];
+  for (const blob of media) {
+    const arrayBuffer = await blob.arrayBuffer();
     const bytes = new Uint8Array(arrayBuffer);
     let binary = "";
-    const len = bytes.byteLength;
-    for (let i = 0; i < len; i++) {
-      binary += String.fromCharCode(bytes[i]);
+    /* One character at a time overflows the argument list on a large file, so
+       String.fromCharCode is fed in chunks rather than a whole megabyte. */
+    const CHUNK = 0x8000;
+    for (let i = 0; i < bytes.byteLength; i += CHUNK) {
+      binary += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
     }
-    const base64Audio = btoa(binary);
     parts.push({
       inlineData: {
-        mimeType: audioBlob.type || "audio/wav",
-        data: base64Audio
+        mimeType: blob.type || "audio/wav",
+        data: btoa(binary)
       }
     });
   }
@@ -4119,8 +4145,15 @@ async function makeVoiceFile() {
     setAiVoiceStatus("That script is too long to speak in one go — keep it under 5000 characters.", "warn");
     return;
   }
-  const apiKey = getApiKey();
-  if (!apiKey) { $("apiKeyModal").classList.add("open"); return; }
+  /* On the server path the key is not ours to have, and asking for one
+     would be asking for something nobody needs. */
+  const onServer = !!(window.CS && CS.ai.mode === "server");
+  const apiKey = onServer ? null : getApiKey();
+  if (!onServer && !apiKey) { $("apiKeyModal").classList.add("open"); return; }
+  if (onServer && !CS.ai.user) {
+    setAiVoiceStatus("Sign in to make a voiceover — the button is in the top right.", "warn");
+    return;
+  }
 
   const voice = $("aiVoice").value || "Kore";
   const style = ($("aiVoiceStyle").value || "").trim();
@@ -4138,6 +4171,20 @@ async function makeVoiceFile() {
   startAiClock(btn, "Speaking your script");
   setAiVoiceStatus("");
   try {
+    let audioB64, audioMime;
+
+    if (onServer) {
+      /* One request. The model choice, the retries and the metering all
+         happen on the other side of it. */
+      const out = await CS.serverSpeak({
+        script: text,
+        voice: voice,
+        style: style,
+        cast: cast ? cast.map(c => ({ name: c.name, voice: c.voice })) : null
+      });
+      audioB64 = out.audio;
+      audioMime = out.mimeType;
+    } else {
     /* A refused model is dropped and another tried once, so a retired preview
        costs a round trip rather than the whole feature. */
     let res, model, lastMsg = "";
@@ -4194,11 +4241,14 @@ async function makeVoiceFile() {
     const data = await res.json();
     const part = (data.candidates?.[0]?.content?.parts || []).find(p => p.inlineData?.data);
     if (!part) throw new Error("No sound came back. Try a shorter script, or a different narrator.");
+    audioB64 = part.inlineData.data;
+    audioMime = part.inlineData.mimeType;
+    }
 
     /* The rate rides in the mime type (audio/L16;codec=pcm;rate=24000).
        Read it rather than assuming — a wrong rate plays at the wrong pitch. */
-    const rate = parseInt((part.inlineData.mimeType || "").match(/rate=(\d+)/)?.[1], 10) || 24000;
-    const bin = atob(part.inlineData.data);
+    const rate = parseInt((audioMime || "").match(/rate=(\d+)/)?.[1], 10) || 24000;
+    const bin = atob(audioB64);
     const pcm = new Uint8Array(bin.length);
     for (let i = 0; i < bin.length; i++) pcm[i] = bin.charCodeAt(i);
     const wav = pcmToWavBlob(pcm, rate);
@@ -4883,4 +4933,789 @@ if ($("autoSaveBadge")) {
 // Restore session state automatically on startup
 loadSessionState();
 
+/* ============================================================
+   Taking a watermark off the footage.
 
+   A logo burned into the picture is not like anything else in this tool. It
+   is not text we own, it is not a caption we drew, and it is not something a
+   later step can cover — it sits under everything and rides through to the
+   export. So it has to come off the frame itself, and it has to come off the
+   same way twice: once for the preview you judge the shot on, and once for
+   the render nobody watches.
+
+   Two halves, and they are deliberately different.
+
+   FINDING it is the tedious half, and it is the half a model is good at:
+   three stills go to Gemini and it says which rectangle the mark lives in.
+   Three frames rather than one, because a watermark is the thing that does
+   not move while the footage under it does, and one frame cannot show that.
+
+   REMOVING it is arithmetic, and it stays on this machine. Sending nine
+   hundred frames to a model and waiting for nine hundred answers would cost
+   real money, take an hour, and flicker — because every frame would be
+   invented on its own with no memory of the frame before it. The repair
+   below reads the picture around the mark and grows it inward, which is
+   cheap, instant, and steady from frame to frame for the same reason: the
+   same input always gives the same output.
+   ============================================================ */
+
+S.wm = { on: true, method: "fill", all: false };
+
+/* Areas live on the clip they belong to, normalised 0..1 against that clip's
+   own frame — so a 4K clip and a 720p clip in the same timeline each mark
+   their own mark, and nothing has to be recomputed when the export size
+   changes. */
+function wmAreasFor(clip) {
+  return (clip && clip.wm) || [];
+}
+
+function wmActiveAreas() {
+  return wmAreasFor(S.clips[activeClip]);
+}
+
+/* ------------------------------------------------------------
+   The repair itself.
+
+   Everything below works on one rectangle of one frame: the hole to be
+   filled, plus a ring of real picture around it to fill it from.
+   ------------------------------------------------------------ */
+
+/* Fill the unknown pixels from the known ones by collapsing the region down
+   to almost nothing and expanding it again.
+
+   Going down, each level averages the four pixels beneath it — but only the
+   ones that are known, so colour flows *into* the hole a little further at
+   every level, and a few levels up the hole has been swallowed entirely.
+   Coming back down, a pixel that was unknown takes the colour the level
+   above it worked out. What comes out follows the shading and the gradients
+   around the hole instead of smearing one average across it, which is the
+   difference between a repair and a smudge.
+
+   Cheap, too: an area a few hundred pixels across collapses in eight or nine
+   steps, so this runs per frame at 4K without being felt. */
+function wmPushPull(col, wgt, W, H) {
+  const levels = [{ c: col, w: wgt, W: W, H: H }];
+  while (true) {
+    const p = levels[levels.length - 1];
+    if (p.W <= 2 || p.H <= 2) break;
+    const nW = Math.ceil(p.W / 2), nH = Math.ceil(p.H / 2);
+    const nc = new Float32Array(nW * nH * 3), nw = new Float32Array(nW * nH);
+    for (let y = 0; y < nH; y++) {
+      for (let x = 0; x < nW; x++) {
+        let sw = 0, sr = 0, sg = 0, sb = 0;
+        for (let j = 0; j < 2; j++) {
+          const sy = y * 2 + j;
+          if (sy >= p.H) continue;
+          for (let i = 0; i < 2; i++) {
+            const sx = x * 2 + i;
+            if (sx >= p.W) continue;
+            const k = sy * p.W + sx, ww = p.w[k];
+            if (ww <= 0) continue;
+            sw += ww;
+            sr += p.c[k * 3]     * ww;
+            sg += p.c[k * 3 + 1] * ww;
+            sb += p.c[k * 3 + 2] * ww;
+          }
+        }
+        const k = y * nW + x;
+        if (sw > 0) { nc[k * 3] = sr / sw; nc[k * 3 + 1] = sg / sw; nc[k * 3 + 2] = sb / sw; }
+        /* Two known children out of four is enough to call this pixel solid.
+           Insisting on all four makes the hole take twice as many levels to
+           close, and the fill comes back flatter for it. */
+        nw[k] = Math.min(1, sw / 2);
+      }
+    }
+    levels.push({ c: nc, w: nw, W: nW, H: nH });
+  }
+
+  for (let L = levels.length - 2; L >= 0; L--) {
+    const f = levels[L], g = levels[L + 1];
+    for (let y = 0; y < f.H; y++) {
+      const gy = Math.min(g.H - 1, Math.max(0, (y + 0.5) / 2 - 0.5));
+      const gy0 = Math.floor(gy), gy1 = Math.min(g.H - 1, gy0 + 1), fy = gy - gy0;
+      for (let x = 0; x < f.W; x++) {
+        const k = y * f.W + x, ww = f.w[k];
+        if (ww >= 1) continue;
+        const gx = Math.min(g.W - 1, Math.max(0, (x + 0.5) / 2 - 0.5));
+        const gx0 = Math.floor(gx), gx1 = Math.min(g.W - 1, gx0 + 1), fx = gx - gx0;
+        const i00 = (gy0 * g.W + gx0) * 3, i01 = (gy0 * g.W + gx1) * 3;
+        const i10 = (gy1 * g.W + gx0) * 3, i11 = (gy1 * g.W + gx1) * 3;
+        for (let c = 0; c < 3; c++) {
+          const top = g.c[i00 + c] + (g.c[i01 + c] - g.c[i00 + c]) * fx;
+          const bot = g.c[i10 + c] + (g.c[i11 + c] - g.c[i10 + c]) * fx;
+          const v = top + (bot - top) * fy;
+          f.c[k * 3 + c] = f.c[k * 3 + c] * ww + v * (1 - ww);
+        }
+        f.w[k] = 1;
+      }
+    }
+  }
+  return levels[0].c;
+}
+
+/* How much fine detail is in the picture around the hole.
+
+   A filled area comes out perfectly smooth, and perfectly smooth is the one
+   thing real footage never is — grain, compression noise and texture are
+   everywhere else in the frame, so a clean patch reads as a patch. Measure
+   the neighbours' roughness and put that much back. */
+function wmRingGrain(col, wgt, W, H) {
+  const lum = i => 0.299 * col[i * 3] + 0.587 * col[i * 3 + 1] + 0.114 * col[i * 3 + 2];
+  let sum = 0, cnt = 0;
+  for (let y = 1; y < H; y++) {
+    for (let x = 1; x < W; x++) {
+      const i = y * W + x;
+      if (!wgt[i] || !wgt[i - 1] || !wgt[i - W]) continue;
+      const l = lum(i);
+      sum += Math.abs(l - lum(i - 1)) + Math.abs(l - lum(i - W));
+      cnt += 2;
+    }
+  }
+  return cnt ? Math.min(9, sum / cnt) : 0;
+}
+
+/* Grain taken from the pixel's own position rather than a random number, so
+   the same pixel gets the same speck in every frame. Fresh noise each frame
+   would crawl and boil, and a boiling rectangle is more obvious than the
+   watermark was. */
+function wmSpeck(x, y) {
+  let h = (x * 374761393 + y * 668265263) | 0;
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  return ((h ^ (h >>> 16)) & 0xffff) / 0xffff - 0.5;
+}
+
+/* Box blur by running total rather than by re-adding the window at every
+   pixel. Written the obvious way this is area x radius, and the radius grows
+   with the area being covered - a big logo on a 4K frame took most of two
+   seconds, per frame, which is not a feature, it is a hang. Sliding the
+   window costs the same whatever the radius is. */
+function wmBoxBlur(src, W, H, r, passes) {
+  const tmp = new Float32Array(src.length);
+  const run = (from, to, len, lines, stride, step) => {
+    for (let line = 0; line < lines; line++) {
+      const base = line * stride;
+      let sr = 0, sg = 0, sb = 0, n = 0;
+      /* prime the window on the left/top edge, where it is clipped */
+      for (let i = 0; i <= Math.min(r, len - 1); i++) {
+        const k = (base + i * step) * 3;
+        sr += from[k]; sg += from[k + 1]; sb += from[k + 2]; n++;
+      }
+      for (let i = 0; i < len; i++) {
+        const k = (base + i * step) * 3;
+        to[k] = sr / n; to[k + 1] = sg / n; to[k + 2] = sb / n;
+        const add = i + r + 1, drop = i - r;
+        if (add < len) {
+          const ka = (base + add * step) * 3;
+          sr += from[ka]; sg += from[ka + 1]; sb += from[ka + 2]; n++;
+        }
+        if (drop >= 0) {
+          const kd = (base + drop * step) * 3;
+          sr -= from[kd]; sg -= from[kd + 1]; sb -= from[kd + 2]; n--;
+        }
+      }
+    }
+  };
+  for (let p = 0; p < passes; p++) {
+    run(src, tmp, W, H, W, 1);      // across each row
+    run(tmp, src, H, W, 1, W);      // then down each column
+  }
+  return src;
+}
+
+/* How far out of the hole to read for something to fill it with. Too thin
+   and the fill has nothing to go on; too thick and we are reading half the
+   frame to patch a logo. */
+const WM_FEATHER = 2;      // pixels of fade at the edge of the repair
+const WM_COPY_PAD = 3;     // and how far past the hole the preview copies back
+
+function wmMargin(w, h) {
+  return Math.max(8, Math.min(72, Math.round(Math.min(w, h) * 0.6)));
+}
+
+/* Repair one rectangle of whatever is already painted on this context.
+
+   The rectangle is in that context's own pixels, so the caller can hand over
+   a 4K export frame or a scratch the size of a postage stamp and this does
+   not need to know which. */
+function wmFixPatch(ctx, hx, hy, hw, hh, method) {
+  const cw = ctx.canvas.width, ch = ctx.canvas.height;
+  const x0 = Math.max(0, Math.floor(hx)), y0 = Math.max(0, Math.floor(hy));
+  const x1 = Math.min(cw, Math.ceil(hx + hw)), y1 = Math.min(ch, Math.ceil(hy + hh));
+  const holeW = x1 - x0, holeH = y1 - y0;
+  if (holeW < 3 || holeH < 3) return;
+
+  const m = wmMargin(holeW, holeH);
+  const ex0 = Math.max(0, x0 - m), ey0 = Math.max(0, y0 - m);
+  const ex1 = Math.min(cw, x1 + m), ey1 = Math.min(ch, y1 + m);
+  const W = ex1 - ex0, H = ey1 - ey0;
+  if (W < 4 || H < 4) return;
+
+  let img;
+  try { img = ctx.getImageData(ex0, ey0, W, H); }
+  catch (e) { return; }        // a tainted canvas cannot be read — leave the frame alone
+  const d = img.data, n = W * H;
+
+  /* The hole, plus a couple of pixels of fade so the repair does not end on a
+     hard line. A hard line shows even when the fill under it is perfect, and
+     it is the tell that gives a patched frame away. */
+  const hx0 = x0 - ex0, hy0 = y0 - ey0, hx1 = hx0 + holeW, hy1 = hy0 + holeH;
+  const alpha = new Float32Array(n);
+  let known = 0;
+  for (let y = 0; y < H; y++) {
+    const dy = Math.max(hy0 - y, y - (hy1 - 1), 0);
+    for (let x = 0; x < W; x++) {
+      const dx = Math.max(hx0 - x, x - (hx1 - 1), 0);
+      const dist = Math.max(dx, dy);
+      const a = dist === 0 ? 1 : Math.max(0, 1 - dist / (WM_FEATHER + 1));
+      alpha[y * W + x] = a;
+      if (a <= 0) known++;
+    }
+  }
+  if (known < 16) return;      // nothing left to fill from
+
+  const col = new Float32Array(n * 3), wgt = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    col[i * 3] = d[i * 4]; col[i * 3 + 1] = d[i * 4 + 1]; col[i * 3 + 2] = d[i * 4 + 2];
+    wgt[i] = alpha[i] > 0 ? 0 : 1;
+  }
+
+  let out;
+  if (method === "cover") {
+    /* One flat colour, taken from what surrounds the mark. Never clever and
+       never wrong — the honest option for when the fill guesses badly. */
+    let r = 0, g = 0, b = 0, c = 0;
+    for (let i = 0; i < n; i++) {
+      if (!wgt[i]) continue;
+      r += col[i * 3]; g += col[i * 3 + 1]; b += col[i * 3 + 2]; c++;
+    }
+    r /= c; g /= c; b /= c;
+    out = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) { out[i * 3] = r; out[i * 3 + 1] = g; out[i * 3 + 2] = b; }
+  } else if (method === "blur") {
+    /* The privacy blur: the area smeared into itself until the mark is not
+       readable. It stays visible as a soft patch, which is sometimes the
+       point — it says the area was covered deliberately. */
+    const r = Math.max(2, Math.round(Math.min(holeW, holeH) / 5));
+    out = wmBoxBlur(col.slice(), W, H, r, 3);
+  } else {
+    out = wmPushPull(col.slice(), wgt.slice(), W, H);
+    const grain = wmRingGrain(col, wgt, W, H);
+    if (grain > 0.2) {
+      for (let y = 0; y < H; y++) {
+        for (let x = 0; x < W; x++) {
+          const i = y * W + x;
+          if (alpha[i] <= 0) continue;
+          const s = wmSpeck(ex0 + x, ey0 + y) * grain * 1.7;
+          out[i * 3] += s; out[i * 3 + 1] += s; out[i * 3 + 2] += s;
+        }
+      }
+    }
+  }
+
+  for (let i = 0; i < n; i++) {
+    const a = alpha[i];
+    if (a <= 0) continue;
+    for (let c = 0; c < 3; c++) {
+      const v = d[i * 4 + c] * (1 - a) + out[i * 3 + c] * a;
+      d[i * 4 + c] = v < 0 ? 0 : v > 255 ? 255 : v;
+    }
+  }
+  ctx.putImageData(img, ex0, ey0);
+}
+
+/* Called from drawClipFitted, which every export path goes through. The
+   element is the clip's own hidden <video> during a render and the on-stage
+   one during a screen recording, so look the clip up both ways. */
+function repairWatermarks(ctx, el, dx, dy, dw, dh) {
+  if (!S.wm || !S.wm.on) return;
+  const clip = S.clips.find(c => c.el === el) || S.clips[activeClip];
+  const areas = wmAreasFor(clip);
+  if (!areas.length) return;
+  for (const a of areas) {
+    wmFixPatch(ctx, dx + a.x * dw, dy + a.y * dh, a.w * dw, a.h * dh, S.wm.method);
+  }
+}
+
+/* ------------------------------------------------------------
+   The preview.
+
+   On stage the clip is a real <video> element, not something drawn to a
+   canvas, so there is no frame here to reach into. The repaired rectangles
+   go on their own layer over it instead — which is also why that layer
+   carries the clip's exact pixel dimensions: object-fit then letterboxes it
+   identically, and the patch lands on the mark whatever shape the clip is.
+   ------------------------------------------------------------ */
+let wmScratch = null;
+let wmLastKey = "";
+
+function wmScratchCtx(W, H) {
+  if (!wmScratch) wmScratch = document.createElement("canvas");
+  if (wmScratch.width !== W || wmScratch.height !== H) { wmScratch.width = W; wmScratch.height = H; }
+  return wmScratch.getContext("2d", { alpha: false, willReadFrequently: true });
+}
+
+function wmInvalidate() { wmLastKey = ""; }
+
+function paintWatermarkLayer() {
+  const cv = $("wmLayer");
+  if (!cv || !S.wm) return;
+  const areas = wmActiveAreas();
+  const vw = video.videoWidth, vh = video.videoHeight;
+  const live = S.wm.on && areas.length && vw && vh && video.readyState >= 2;
+  if (!live) {
+    if (cv.width > 2) { cv.width = 2; cv.height = 2; }
+    wmLastKey = "";
+    return;
+  }
+
+  /* Redrawing an unchanged frame is a getImageData and a pyramid for nothing,
+     sixty times a second, for as long as the video sits paused. */
+  const key = vw + "x" + vh + "|" + video.currentTime.toFixed(3) + "|" + S.wm.method + "|" +
+    areas.map(a => a.x.toFixed(4) + "," + a.y.toFixed(4) + "," +
+                   a.w.toFixed(4) + "," + a.h.toFixed(4)).join(";");
+  if (key === wmLastKey) return;
+  wmLastKey = key;
+
+  if (cv.width !== vw || cv.height !== vh) { cv.width = vw; cv.height = vh; }
+  const lctx = cv.getContext("2d");
+  lctx.clearRect(0, 0, vw, vh);
+
+  for (const a of areas) {
+    const hx = a.x * vw, hy = a.y * vh, hw = a.w * vw, hh = a.h * vh;
+    if (hw < 3 || hh < 3) continue;
+    const m = wmMargin(hw, hh) + 4;
+    const ex0 = Math.max(0, Math.floor(hx - m)), ey0 = Math.max(0, Math.floor(hy - m));
+    const ex1 = Math.min(vw, Math.ceil(hx + hw + m)), ey1 = Math.min(vh, Math.ceil(hy + hh + m));
+    const W = ex1 - ex0, H = ey1 - ey0;
+    if (W < 6 || H < 6) continue;
+
+    const sctx = wmScratchCtx(W, H);
+    try { sctx.drawImage(video, ex0, ey0, W, H, 0, 0, W, H); }
+    catch (e) { continue; }
+    wmFixPatch(sctx, hx - ex0, hy - ey0, hw, hh, S.wm.method);
+
+    /* Copy back the hole and the feathered pixels around it — those were
+       blended against the true picture already, so they belong on the layer
+       too. Stopping at the hole edge would leave exactly the seam the feather
+       is there to avoid. */
+    const P = WM_COPY_PAD;
+    const cx0 = Math.max(0, Math.floor(hx) - P), cy0 = Math.max(0, Math.floor(hy) - P);
+    const cx1 = Math.min(vw, Math.ceil(hx + hw) + P), cy1 = Math.min(vh, Math.ceil(hy + hh) + P);
+    lctx.drawImage(sctx.canvas, cx0 - ex0, cy0 - ey0, cx1 - cx0, cy1 - cy0,
+                   cx0, cy0, cx1 - cx0, cy1 - cy0);
+  }
+}
+
+/* ------------------------------------------------------------
+   Marking an area by hand.
+
+   The model gets it right most of the time and slightly wrong the rest, and
+   "slightly wrong" on a watermark means a sliver of the logo still showing.
+   So every area it finds is draggable, and one can be drawn from scratch
+   without a key at all.
+   ------------------------------------------------------------ */
+const wmEditing = () => !!($("wmBox") && $("wmBox").open && S.clips.length);
+
+/* The marking surface has to sit on the video's *contained* rect, not on the
+   frame — a clip that is not 9:16 is letterboxed inside it, and a box dragged
+   onto the letterbox would be marking nothing. */
+function layoutWmEdit() {
+  const frame = document.querySelector(".frame");
+  const box = $("wmEdit");
+  if (!frame || !box) return;
+  const fw = frame.clientWidth, fh = frame.clientHeight;
+  const vw = video.videoWidth || 1080, vh = video.videoHeight || 1920;
+  const s = Math.min(fw / vw, fh / vh);
+  const w = vw * s, h = vh * s;
+  box.style.left = Math.round((fw - w) / 2) + "px";
+  box.style.top = Math.round((fh - h) / 2) + "px";
+  box.style.width = Math.round(w) + "px";
+  box.style.height = Math.round(h) + "px";
+}
+
+function renderWmAreas() {
+  const box = $("wmEdit");
+  if (!box) return;
+  const open = !!($("wmBox") && $("wmBox").open);
+  box.classList.toggle("on", wmEditing());
+  box.setAttribute("aria-hidden", wmEditing() ? "false" : "true");
+  box.replaceChildren();
+  if (!open) return;
+
+  wmActiveAreas().forEach((a, i) => {
+    const el = document.createElement("div");
+    el.className = "wm-area";
+    el.dataset.i = i;
+    el.style.left = (a.x * 100) + "%";
+    el.style.top = (a.y * 100) + "%";
+    el.style.width = (a.w * 100) + "%";
+    el.style.height = (a.h * 100) + "%";
+
+    const tag = document.createElement("span");
+    tag.className = "wm-tag";
+    tag.textContent = a.label || ("area " + (i + 1));
+    const grip = document.createElement("span");
+    grip.className = "wm-grip";
+    el.append(tag, grip);
+    box.appendChild(el);
+  });
+}
+
+function renderWmList() {
+  const list = $("wmList");
+  if (!list) return;
+  list.replaceChildren();
+  const areas = wmActiveAreas();
+
+  const hint = $("wmDrawHint");
+  if (hint) {
+    hint.textContent = areas.length
+      ? "Drag an area to move it, or its corner to resize. Drag on empty picture to add another."
+      : "Nothing marked yet. Drag a box across the preview to mark one by hand, or press the button and let Gemini find it.";
+  }
+
+  areas.forEach((a, i) => {
+    const row = document.createElement("div");
+    row.className = "wm-row";
+
+    const what = document.createElement("span");
+    what.className = "wm-what";
+    what.textContent = a.label || ("area " + (i + 1));
+
+    const where = document.createElement("span");
+    where.className = "wm-where";
+    where.textContent = Math.round(a.w * 100) + "×" + Math.round(a.h * 100) + "% at " +
+                        Math.round(a.x * 100) + "," + Math.round(a.y * 100);
+
+    const del = document.createElement("button");
+    del.textContent = "✕";
+    del.title = "Stop covering this area";
+    del.addEventListener("click", () => {
+      wmActiveAreas().splice(i, 1);
+      wmChanged();
+    });
+
+    row.append(what, where, del);
+    list.appendChild(row);
+  });
+
+  const wrap = $("wmAllWrap");
+  if (wrap) wrap.style.display = S.clips.length > 1 ? "" : "none";
+}
+
+/* Every edit lands here: push the areas out to the other clips if that was
+   asked for, redraw both the list and the boxes, and throw away the cached
+   preview frame so the next tick actually repaints. */
+function wmChanged() {
+  if (S.wm.all) {
+    const src = wmActiveAreas();
+    S.clips.forEach((c, i) => {
+      if (i === activeClip) return;
+      c.wm = src.map(a => ({ x: a.x, y: a.y, w: a.w, h: a.h, label: a.label }));
+    });
+  }
+  renderWmList();
+  renderWmAreas();
+  wmInvalidate();
+}
+
+/* Re-run after a clip change: the layer, the surface and the list all follow
+   whichever clip is on stage. */
+function wmSync() {
+  S.clips.forEach(c => { if (!c.wm) c.wm = []; });
+  layoutWmEdit();
+  renderWmList();
+  renderWmAreas();
+  wmInvalidate();
+}
+
+function wmSay(msg, kind) {
+  const el = $("wmStatus");
+  if (!el) return;
+  el.textContent = msg || "";
+  el.className = "status" + (kind ? " " + kind : "");
+}
+
+/* ------------------------------------------------------------
+   Finding it with Gemini.
+   ------------------------------------------------------------ */
+
+/* Three stills, spread across the clip. One frame cannot tell a watermark
+   from a logo on a passing bus; three can, because only one of them is in
+   the same place every time — and that is exactly what the prompt asks for. */
+async function wmGrabFrames(clip, fractions) {
+  const el = clip.el;
+  const vw = el.videoWidth, vh = el.videoHeight;
+  if (!vw || !vh) return [];
+  const was = el.currentTime;
+  /* Big enough that a small handle is still readable, small enough that
+     three of them are a couple of hundred kilobytes. */
+  const scale = Math.min(1, 768 / Math.max(vw, vh));
+  const cv = document.createElement("canvas");
+  cv.width = Math.max(2, Math.round(vw * scale));
+  cv.height = Math.max(2, Math.round(vh * scale));
+  const c = cv.getContext("2d", { alpha: false });
+
+  try { el.pause(); } catch (e) {}
+  const out = [];
+  for (const f of fractions) {
+    const span = Math.max(0.1, clip.duration || 1);
+    await seekElement(el, Math.min(Math.max(0.05, span * f), Math.max(0.05, span - 0.05)));
+    c.drawImage(el, 0, 0, cv.width, cv.height);
+    const blob = await new Promise(r => cv.toBlob(r, "image/jpeg", 0.85));
+    if (blob) out.push(blob);
+  }
+  await seekElement(el, was);
+  return out;
+}
+
+const WM_PROMPT =
+  "These are three still frames from one short vertical video, in the order they " +
+  "appear. Find every watermark burned into the picture: a platform badge, an app " +
+  "logo, a channel name or @handle, a stock-footage mark, a semi-transparent brand " +
+  "overlay. The giveaway is that it holds the same position and the same shape in " +
+  "all three frames while the footage underneath it changes.\n\n" +
+  "Do NOT report: subtitles or captions of what is being spoken, on-screen text that " +
+  "belongs to the story being told, signs and logos that are physically part of the " +
+  "scene, faces, or anything that moves with the camera.\n\n" +
+  "Return one entry per mark. box_2d is [ymin, xmin, ymax, xmax] normalised to 0-1000 " +
+  "over the whole frame. Draw each box a little loose rather than tight — a mark's " +
+  "soft edge, drop shadow and glow all have to be inside it. Make label a two or three " +
+  "word description of what the mark is. If there is no watermark, return an empty list.";
+
+const WM_SCHEMA = {
+  type: "OBJECT",
+  properties: {
+    marks: {
+      type: "ARRAY",
+      items: {
+        type: "OBJECT",
+        properties: {
+          label: { type: "STRING" },
+          box_2d: { type: "ARRAY", items: { type: "NUMBER" } }
+        },
+        required: ["label", "box_2d"]
+      }
+    }
+  },
+  required: ["marks"]
+};
+
+/* Gemini answers in its own box format and, being a model, sometimes answers
+   in a slightly different one. Take both, pad the result, and throw out the
+   answers that cannot be a watermark. */
+function wmBoxFrom(raw) {
+  if (!Array.isArray(raw) || raw.length < 4) return null;
+  const v = raw.slice(0, 4).map(Number);
+  if (v.some(k => !isFinite(k))) return null;
+  const div = Math.max.apply(null, v.map(Math.abs)) > 1.5 ? 1000 : 1;
+  const ymin = v[0] / div, xmin = v[1] / div, ymax = v[2] / div, xmax = v[3] / div;
+  let x = Math.min(xmin, xmax), y = Math.min(ymin, ymax);
+  let w = Math.abs(xmax - xmin), h = Math.abs(ymax - ymin);
+  if (!(w > 0) || !(h > 0)) return null;
+
+  /* Models draw these tight around the glyphs, and a watermark's halo lives
+     just outside them. A box a hair too big costs nothing; a box a hair too
+     small leaves a bright rim of the logo on screen. */
+  const padX = Math.max(0.006, w * 0.10), padY = Math.max(0.006, h * 0.14);
+  x = Math.max(0, x - padX); y = Math.max(0, y - padY);
+  w = Math.min(1 - x, w + padX * 2); h = Math.min(1 - y, h + padY * 2);
+
+  if (w < 0.012 || h < 0.008) return null;   // too small to be a mark, or a stray number
+  if (w * h > 0.35) return null;             // that is not a watermark, that is the frame
+  return { x: x, y: y, w: w, h: h };
+}
+
+async function findWatermarks() {
+  const btn = $("btnWmFind");
+  if (!S.clips.length) { wmSay("Add a clip in step 1 first.", "warn"); return; }
+
+  startAiClock(btn, "looking");
+  let found = 0, blank = 0;
+  const failed = [];
+  try {
+    for (let i = 0; i < S.clips.length; i++) {
+      const clip = S.clips[i];
+      const many = S.clips.length > 1;
+      setAiClockLabel(btn, many ? "clip " + (i + 1) + " of " + S.clips.length : "looking");
+      wmSay(many ? "Reading clip " + (i + 1) + " of " + S.clips.length + "…" : "Reading three frames…");
+
+      let shots;
+      try { shots = await wmGrabFrames(clip, [0.12, 0.45, 0.82]); }
+      catch (e) { failed.push(clip.name); continue; }
+      if (!shots.length) { failed.push(clip.name); continue; }
+
+      /* A missing key or a dead network is fatal for all of them, not just
+         this one, so that error is allowed straight out of the loop rather
+         than being asked four more times. */
+      const reply = await callGeminiApi(WM_PROMPT, shots, WM_SCHEMA);
+
+      const marks = (reply && reply.marks) || [];
+      const areas = [];
+      for (const mk of marks) {
+        const box = wmBoxFrom(mk && mk.box_2d);
+        if (!box) continue;
+        box.label = String((mk && mk.label) || "watermark").slice(0, 40);
+        areas.push(box);
+      }
+      clip.wm = areas;
+      if (areas.length) found += areas.length; else blank++;
+    }
+
+    renderWmList();
+    renderWmAreas();
+    wmInvalidate();
+
+    if (failed.length === S.clips.length) {
+      wmSay("Couldn't read a frame out of " + (failed.length === 1 ? "that clip." : "those clips."), "warn");
+      stopAiClock(btn);
+      return;
+    }
+    if (!found) {
+      wmSay("No watermark found" + (blank > 1 ? " in any of them" : "") +
+            ". If you can see one, drag a box over it on the preview instead.", "warn");
+    } else {
+      const on = $("wmOn");
+      if (on && !on.checked) { on.checked = true; S.wm.on = true; }
+      wmSay(found === 1
+        ? "Found one and covered it. Check the preview — drag the box if it misses part of the mark."
+        : "Found " + found + " and covered them. Check the preview — drag a box if it misses part of a mark.",
+        "ok");
+    }
+    stopAiClock(btn, "✓ done", 1800);
+  } catch (e) {
+    stopAiClock(btn);
+    wmSay(shortReason(e), "warn");
+  }
+}
+
+/* ------------------------------------------------------------
+   Wiring
+   ------------------------------------------------------------ */
+(function wireWatermark() {
+  const box = $("wmBox");
+  if (!box) return;
+
+  const METHOD_NOTE = {
+    fill: "Grows the surrounding picture inward over the mark. Best on footage that is moving or textured — a still, flat background is where it shows.",
+    blur: "Smears the area into itself until the mark is unreadable. You can still see something was covered, which is sometimes the point.",
+    cover: "A flat patch in the colour of whatever surrounds it. Never clever, never wrong."
+  };
+  const note = $("wmMethodNote");
+  const setNote = () => { if (note) note.textContent = METHOD_NOTE[S.wm.method] || ""; };
+  setNote();
+
+  box.addEventListener("toggle", () => {
+    if (box.open) wmSync(); else renderWmAreas();
+  });
+
+  $("btnWmFind").addEventListener("click", findWatermarks);
+
+  $("btnWmClear").addEventListener("click", () => {
+    S.clips.forEach(c => { c.wm = []; });
+    wmSay("");
+    renderWmList();
+    renderWmAreas();
+    wmInvalidate();
+  });
+
+  $("wmOn").addEventListener("change", e => {
+    S.wm.on = e.target.checked;
+    wmInvalidate();
+  });
+
+  const all = $("wmAll");
+  if (all) all.addEventListener("change", e => {
+    S.wm.all = e.target.checked;
+    if (S.wm.all) wmChanged();
+  });
+
+  $("wmMethod").addEventListener("click", e => {
+    const b = e.target.closest("button[data-m]");
+    if (!b) return;
+    S.wm.method = b.dataset.m;
+    Array.from($("wmMethod").querySelectorAll("button")).forEach(x =>
+      x.setAttribute("aria-pressed", x === b ? "true" : "false"));
+    setNote();
+    wmInvalidate();
+  });
+
+  /* Dragging. One listener for all three gestures — draw a new area, move an
+     existing one, resize it by the corner — because they differ only in what
+     the pointer landed on and what the numbers mean afterwards. */
+  const surface = $("wmEdit");
+  const MIN = 0.012;
+
+  surface.addEventListener("pointerdown", ev => {
+    if (!wmEditing()) return;
+    const r = surface.getBoundingClientRect();
+    if (!r.width || !r.height) return;
+    const nx = v => Math.min(1, Math.max(0, (v - r.left) / r.width));
+    const ny = v => Math.min(1, Math.max(0, (v - r.top) / r.height));
+    const areas = wmActiveAreas();
+
+    const areaEl = ev.target.closest(".wm-area");
+    const onGrip = !!ev.target.closest(".wm-grip");
+    const i = areaEl ? Number(areaEl.dataset.i) : -1;
+    if (areaEl && !areas[i]) return;
+
+    const start = { x: nx(ev.clientX), y: ny(ev.clientY) };
+    let mode, orig = null, live = null;
+    if (areaEl && onGrip) { mode = "resize"; live = areas[i]; orig = Object.assign({}, live); }
+    else if (areaEl)      { mode = "move";   live = areas[i]; orig = Object.assign({}, live); }
+    else {
+      mode = "draw";
+      live = { x: start.x, y: start.y, w: 0, h: 0, label: "marked by hand" };
+      areas.push(live);
+    }
+
+    ev.preventDefault();
+    try { surface.setPointerCapture(ev.pointerId); } catch (e) {}
+
+    const move = e => {
+      const px = nx(e.clientX), py = ny(e.clientY);
+      if (mode === "draw") {
+        live.x = Math.min(start.x, px); live.y = Math.min(start.y, py);
+        live.w = Math.abs(px - start.x); live.h = Math.abs(py - start.y);
+      } else if (mode === "move") {
+        live.x = Math.min(1 - orig.w, Math.max(0, orig.x + (px - start.x)));
+        live.y = Math.min(1 - orig.h, Math.max(0, orig.y + (py - start.y)));
+      } else {
+        live.w = Math.min(1 - live.x, Math.max(MIN, orig.w + (px - start.x)));
+        live.h = Math.min(1 - live.y, Math.max(MIN, orig.h + (py - start.y)));
+      }
+      wmChanged();
+    };
+
+    const up = () => {
+      surface.removeEventListener("pointermove", move);
+      surface.removeEventListener("pointerup", up);
+      surface.removeEventListener("pointercancel", up);
+      try { surface.releasePointerCapture(ev.pointerId); } catch (e) {}
+      /* A click that never became a drag would otherwise leave a zero-sized
+         area behind — invisible on the preview and baffling in the list. */
+      if (live.w < MIN || live.h < MIN) {
+        const at = areas.indexOf(live);
+        if (mode === "draw" && at >= 0) areas.splice(at, 1);
+        else { live.w = Math.max(live.w, MIN); live.h = Math.max(live.h, MIN); }
+      }
+      wmChanged();
+    };
+
+    surface.addEventListener("pointermove", move);
+    surface.addEventListener("pointerup", up);
+    surface.addEventListener("pointercancel", up);
+  });
+
+  /* The marking surface is measured in CSS pixels, so it has to be measured
+     again whenever the frame changes size or a clip of a different shape
+     loads. */
+  window.addEventListener("resize", layoutWmEdit);
+  video.addEventListener("loadedmetadata", () => { layoutWmEdit(); wmInvalidate(); });
+  if (window.ResizeObserver) {
+    const frame = document.querySelector(".frame");
+    if (frame) new ResizeObserver(layoutWmEdit).observe(frame);
+  }
+
+  wmSync();
+})();

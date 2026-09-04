@@ -14,11 +14,18 @@
   <p>Karaoke captions for vertical clips — tapped in by hand or powered by AI.</p>
   <button id="autoSaveBadge" class="api-key-btn" style="display:none;" title="Session restored from auto-save. Click to clear.">💾 Auto-Saved <span style="font-size:10px; opacity:0.8;">✕</span></button>
   <button id="apiKeyBtn" class="api-key-btn">🔑 Gemini Key</button>
-  <div class="privacy">Runs offline · 100% Client-Side</div>
+  <div id="acctBox" class="acct-box"></div>
+  <div class="privacy">Your clips never leave this machine</div>
 </div>
 
 <!-- Five steps in the order they have to happen. The voice must exist before
      the timing is taken, or the captions drift against it. -->
+<div id="adRail" class="ad-rail" hidden>
+  <div id="adSlot" class="ad-slot">
+    <span>Ad space — free plan</span>
+  </div>
+</div>
+
 <nav class="steprail" id="stepRail" aria-label="Steps">
   <a href="#step0" data-step="step0"><i>⚡</i><span>Fast track</span></a>
   <a href="#step1" data-step="step1"><i>1</i><span>Clips</span></a>
@@ -34,7 +41,14 @@
   <div class="stage-col">
     <div class="frame">
       <video id="video" playsinline></video>
+      <!-- The repaired patches, painted over the clip and under the captions.
+           Its intrinsic size is the clip's own, and object-fit:contain lands it
+           on exactly the pixels the <video> beneath it is showing. -->
+      <canvas id="wmLayer" aria-hidden="true"></canvas>
       <canvas id="overlay"></canvas>
+      <!-- Live only while the watermark panel is open, so an area can be dragged
+           onto the mark by hand. Inert the rest of the time. -->
+      <div id="wmEdit" aria-hidden="true"></div>
       <div class="empty" id="stageEmpty">
         <strong>No video yet</strong>
         <span>Start with step 1 — choose the clip you want to caption.</span>
@@ -147,6 +161,50 @@
       <div id="clipList" class="clip-list" style="display:none"></div>
       <p class="hint" id="clipSound" style="display:none;margin:9px 0 0;padding:8px 10px;border-radius:7px;
          background:rgba(224,179,65,.10);border:1px solid rgba(224,179,65,.35);color:#e8cf94;font-size:12.5px"></p>
+
+      <!-- A watermark burned into the footage survives every other step, so it
+           comes off here, before anything is drawn on top of it. -->
+      <details class="batchbox wmbox" id="wmBox">
+        <summary>Remove a watermark</summary>
+        <p class="hint" style="margin:9px 0 9px">
+          Gemini reads a few frames of each clip and says where the burned-in logo,
+          handle or app badge sits. The removal itself happens on this machine,
+          frame by frame, in the preview and in the export. The clip is not uploaded —
+          three still frames are.
+        </p>
+        <div class="vo-actions">
+          <button id="btnWmFind" class="primary">🔍 Find the watermark</button>
+          <button id="btnWmClear" class="ghost">Clear areas</button>
+        </div>
+        <div class="status" id="wmStatus" role="status" aria-live="polite"></div>
+
+        <div id="wmList" class="wm-list"></div>
+
+        <p class="hint" id="wmDrawHint" style="margin:9px 0 0;font-size:11.5px">
+          Nothing marked yet. Drag a box across the preview to mark one by hand, or
+          press the button and let Gemini find it.
+        </p>
+
+        <label style="display:block;font-size:11.5px;color:var(--ivory-dim);margin:12px 0 0">How the area is covered</label>
+        <div class="stylechips" id="wmMethod">
+          <button type="button" class="stylechip" aria-pressed="true"  data-m="fill">Fill it in</button>
+          <button type="button" class="stylechip" aria-pressed="false" data-m="blur">Blur it</button>
+          <button type="button" class="stylechip" aria-pressed="false" data-m="cover">Block it out</button>
+        </div>
+        <p class="hint" id="wmMethodNote" style="margin:7px 0 0;font-size:11.5px"></p>
+
+        <label class="chk" style="margin-top:11px">
+          <input type="checkbox" id="wmOn" checked> Apply it to the preview and the export
+        </label>
+        <label class="chk" id="wmAllWrap" style="margin-top:7px;display:none">
+          <input type="checkbox" id="wmAll"> Use these same areas on every clip
+        </label>
+
+        <p class="hint" style="margin:11px 0 0;font-size:11.5px;opacity:.85">
+          For footage you own or are licensed to use. Lifting someone else's mark off
+          their work and posting it as yours is not what this is for.
+        </p>
+      </details>
     </section>
 
     <section class="step" id="step2">
@@ -507,6 +565,7 @@
 
 </div>
 
+<script src="account.js"></script>
 <script src="script.js" type="module"></script>
 <script src="ui.js"></script>
 
