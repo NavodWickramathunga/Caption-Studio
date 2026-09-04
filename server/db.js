@@ -1,106 +1,127 @@
 /* ============================================================
-   The store.
+   The store — Firestore.
 
-   SQLite, through the copy Node ships with — no native module to
-   compile and nothing to install. One file on disk, which is the right
-   size of database for a product with no customers yet and stays
-   honest up to a few thousand.
+   This was SQLite, which was the wrong shape for where it is going.
+   SQLite is a file on a disk, and Cloud Run has no disk that survives
+   a restart and runs several copies at once that could not share one
+   file anyway. Firestore has no server to run, no disk to mount and no
+   connection pool to size.
 
-   The one thing to know when deploying: this is a FILE. A host that
-   throws the filesystem away between deploys (Vercel, Netlify
-   functions) will throw the accounts away with it. Railway, Fly and
-   Render all offer a mounted volume; point CAPTION_DB at it.
+   Two collections, and the second is the interesting one:
+
+     users/{uid}                      who they are and what they pay
+     users/{uid}/months/{YYYY-MM}     running totals for the month
+     users/{uid}/calls/{autoId}       one row per billable call
+
+   The month document exists so that checking an allowance is a single
+   read rather than a query that adds up every call ever made. Reads
+   cost money and time here; summing a year of history on every button
+   press would be both. The per-call rows are still written, because a
+   customer disputing a bill deserves the actual list rather than a
+   total, but nothing on the hot path ever reads them.
    ============================================================ */
-const { DatabaseSync } = require('node:sqlite');
-const path = require('path');
-const fs = require('fs');
+const { Firestore, FieldValue } = require('@google-cloud/firestore');
 
-const FILE = process.env.CAPTION_DB || path.join(__dirname, '..', 'data', 'caption-studio.db');
+/* On Cloud Run the service account is picked up automatically. Locally
+   it would come from GOOGLE_APPLICATION_CREDENTIALS, but nothing about
+   this project needs to run locally any more. */
+const store = new Firestore({
+  projectId: process.env.GOOGLE_CLOUD_PROJECT || process.env.GCLOUD_PROJECT || undefined,
+  databaseId: process.env.FIRESTORE_DATABASE || '(default)',
+  ignoreUndefinedProperties: true
+});
 
-fs.mkdirSync(path.dirname(FILE), { recursive: true });
-const db = new DatabaseSync(FILE);
+const users = () => store.collection('users');
 
-/* WAL lets a reader and a writer coexist, which matters the moment two
-   requests arrive at once. */
-db.exec('PRAGMA journal_mode = WAL');
-db.exec('PRAGMA foreign_keys = ON');
-
-db.exec(`
-  CREATE TABLE IF NOT EXISTS users (
-    id            TEXT PRIMARY KEY,          -- Google's stable subject id
-    email         TEXT NOT NULL,
-    name          TEXT,
-    picture       TEXT,
-    plan          TEXT NOT NULL DEFAULT 'free',
-    created_at    INTEGER NOT NULL,
-    last_seen_at  INTEGER NOT NULL
-  );
-
-  -- One row per billable call. Kept per call rather than per month so a
-  -- disputed bill can be answered with the actual list.
-  CREATE TABLE IF NOT EXISTS usage (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id     TEXT NOT NULL REFERENCES users(id),
-    kind        TEXT NOT NULL,               -- 'text' | 'tts'
-    chars       INTEGER NOT NULL DEFAULT 0,  -- characters spoken, for tts
-    cost_micros INTEGER NOT NULL DEFAULT 0,  -- our estimate, millionths of a dollar
-    at          INTEGER NOT NULL
-  );
-
-  CREATE INDEX IF NOT EXISTS usage_by_user_time ON usage (user_id, at);
-`);
-
-const now = () => Date.now();
-
-/* Google is the source of truth for who someone is, so every sign-in
-   refreshes the profile rather than trusting what we stored last time. */
-function upsertUser(profile) {
-  const t = now();
-  db.prepare(`
-    INSERT INTO users (id, email, name, picture, plan, created_at, last_seen_at)
-    VALUES (?, ?, ?, ?, 'free', ?, ?)
-    ON CONFLICT(id) DO UPDATE SET
-      email = excluded.email,
-      name = excluded.name,
-      picture = excluded.picture,
-      last_seen_at = excluded.last_seen_at
-  `).run(profile.id, profile.email, profile.name || null, profile.picture || null, t, t);
-  return getUser(profile.id);
+/* A month in UTC, so a user near midnight in Colombo and one in London
+   are counted against the same window as each other. */
+function monthKey(d = new Date()) {
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
 }
 
-function getUser(id) {
-  return db.prepare('SELECT * FROM users WHERE id = ?').get(id) || null;
-}
-
-function setPlan(id, plan) {
-  db.prepare('UPDATE users SET plan = ? WHERE id = ?').run(plan, id);
-  return getUser(id);
-}
-
-function recordUsage(userId, kind, chars, costMicros) {
-  db.prepare('INSERT INTO usage (user_id, kind, chars, cost_micros, at) VALUES (?, ?, ?, ?, ?)')
-    .run(userId, kind, chars | 0, Math.round(costMicros), now());
-}
-
-/* A calendar month is what a customer thinks a monthly allowance means,
-   so the window is the start of this month rather than a rolling 30 days. */
 function monthStart(d = new Date()) {
   return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1);
 }
 
-function usageThisMonth(userId) {
-  const since = monthStart();
-  const row = db.prepare(`
-    SELECT
-      COALESCE(SUM(CASE WHEN kind = 'tts'  THEN 1 ELSE 0 END), 0) AS ttsCalls,
-      COALESCE(SUM(CASE WHEN kind = 'tts'  THEN chars ELSE 0 END), 0) AS ttsChars,
-      COALESCE(SUM(CASE WHEN kind = 'text' THEN 1 ELSE 0 END), 0) AS textCalls,
-      COALESCE(SUM(cost_micros), 0) AS costMicros
-    FROM usage WHERE user_id = ? AND at >= ?
-  `).get(userId, since);
-  return { ...row, since };
+const shape = (id, data) => data ? ({
+  id,
+  email: data.email || '',
+  name: data.name || null,
+  picture: data.picture || null,
+  plan: data.plan || 'free',
+  createdAt: data.createdAt || 0,
+  lastSeenAt: data.lastSeenAt || 0
+}) : null;
+
+/* Google is the source of truth for a name and a picture, so a sign-in
+   refreshes them. The plan is ours, and a merge must never overwrite
+   it — which is why it is only written when the document is new. */
+async function upsertUser(profile) {
+  const ref = users().doc(profile.id);
+  const now = Date.now();
+  const snap = await ref.get();
+
+  if (!snap.exists) {
+    await ref.set({
+      email: profile.email, name: profile.name || null, picture: profile.picture || null,
+      plan: 'free', createdAt: now, lastSeenAt: now
+    });
+  } else {
+    await ref.update({
+      email: profile.email, name: profile.name || null,
+      picture: profile.picture || null, lastSeenAt: now
+    });
+  }
+  return shape(profile.id, (await ref.get()).data());
+}
+
+async function getUser(id) {
+  if (!id) return null;
+  const snap = await users().doc(id).get();
+  return snap.exists ? shape(id, snap.data()) : null;
+}
+
+async function setPlan(id, plan) {
+  await users().doc(id).update({ plan });
+  return getUser(id);
+}
+
+/* The counters move with increment() rather than read-modify-write, so
+   two calls landing at the same moment cannot lose one of the two. */
+async function recordUsage(userId, kind, chars, costMicros) {
+  const now = Date.now();
+  const month = users().doc(userId).collection('months').doc(monthKey());
+  const call = users().doc(userId).collection('calls').doc();
+
+  const bump = {
+    updatedAt: now,
+    costMicros: FieldValue.increment(Math.round(costMicros))
+  };
+  if (kind === 'tts') {
+    bump.ttsCalls = FieldValue.increment(1);
+    bump.ttsChars = FieldValue.increment(chars | 0);
+  } else {
+    bump.textCalls = FieldValue.increment(1);
+  }
+
+  const batch = store.batch();
+  batch.set(month, bump, { merge: true });
+  batch.set(call, { kind, chars: chars | 0, costMicros: Math.round(costMicros), at: now });
+  await batch.commit();
+}
+
+async function usageThisMonth(userId) {
+  const snap = await users().doc(userId).collection('months').doc(monthKey()).get();
+  const d = snap.exists ? snap.data() : {};
+  return {
+    ttsCalls: d.ttsCalls || 0,
+    ttsChars: d.ttsChars || 0,
+    textCalls: d.textCalls || 0,
+    costMicros: d.costMicros || 0,
+    since: monthStart()
+  };
 }
 
 module.exports = {
-  db, upsertUser, getUser, setPlan, recordUsage, usageThisMonth, monthStart, FILE
+  store, upsertUser, getUser, setPlan, recordUsage, usageThisMonth, monthStart, monthKey
 };

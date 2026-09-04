@@ -44,15 +44,19 @@ app.get('/api/config', (req, res) => {
   });
 });
 
-app.get('/api/me', (req, res) => {
+app.get('/api/me', async (req, res) => {
   if (!req.user) return res.json({ user: null });
-  res.json({
-    user: {
-      id: req.user.id, email: req.user.email,
-      name: req.user.name, picture: req.user.picture, plan: req.user.plan
-    },
-    allowance: allowanceSummary(req.user, usageThisMonth(req.user.id))
-  });
+  try {
+    res.json({
+      user: {
+        id: req.user.id, email: req.user.email,
+        name: req.user.name, picture: req.user.picture, plan: req.user.plan
+      },
+      allowance: allowanceSummary(req.user, await usageThisMonth(req.user.id))
+    });
+  } catch (e) {
+    res.status(503).json({ error: 'Could not read your account just now.' });
+  }
 });
 
 app.post('/api/signin', express.json({ limit: '16kb' }), async (req, res) => {
@@ -61,11 +65,11 @@ app.post('/api/signin', express.json({ limit: '16kb' }), async (req, res) => {
   }
   try {
     const profile = await auth.verifyGoogleIdToken(req.body.credential);
-    const user = upsertUser(profile);
+    const user = await upsertUser(profile);
     auth.setSessionCookie(res, auth.makeSession(user.id), SECURE);
     res.json({
       user: { id: user.id, email: user.email, name: user.name, picture: user.picture, plan: user.plan },
-      allowance: allowanceSummary(user, usageThisMonth(user.id))
+      allowance: allowanceSummary(user, await usageThisMonth(user.id))
     });
   } catch (e) {
     res.status(401).json({ error: String(e.message || e) });

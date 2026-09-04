@@ -1,0 +1,15 @@
+# Never let a secret or a local artefact into the image.
+.env
+.env.*
+!.env.example
+data/
+node_modules/
+.git/
+.github/
+.claude/
+_spent/
+*.mp4
+*.mov
+*.webm
+*.wav
+*.m4a

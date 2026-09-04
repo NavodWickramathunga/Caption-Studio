@@ -130,10 +130,17 @@ function setSessionCookie(res, value, secure) {
 }
 
 /* Attaches req.user when there is one. Never rejects — routes that
-   require a user say so themselves, so a public route stays public. */
-function withUser(req, res, next) {
+   require a user say so themselves, so a public route stays public.
+   A lookup that fails is treated as "nobody": the page is public, and
+   a database wobble should not turn it into a 500. */
+async function withUser(req, res, next) {
   const id = readSession(parseCookies(req)[COOKIE]);
-  req.user = id ? getUser(id) : null;
+  try {
+    req.user = id ? await getUser(id) : null;
+  } catch (e) {
+    console.error('user lookup failed:', e.message);
+    req.user = null;
+  }
   next();
 }
 

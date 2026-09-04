@@ -108,8 +108,12 @@ async function callWithFallback(kind, body) {
 
 /* ---------- what the page is allowed to ask for ---------- */
 
-router.get('/allowance', requireUser, (req, res) => {
-  res.json(allowanceSummary(req.user, usageThisMonth(req.user.id)));
+router.get('/allowance', requireUser, async (req, res) => {
+  try {
+    res.json(allowanceSummary(req.user, await usageThisMonth(req.user.id)));
+  } catch (e) {
+    res.status(503).json({ error: 'Could not read your allowance just now.' });
+  }
 });
 
 router.post('/text', requireUser, express.json({ limit: '256kb' }), async (req, res) => {
@@ -117,7 +121,7 @@ router.post('/text', requireUser, express.json({ limit: '256kb' }), async (req, 
   if (!prompt) return res.status(400).json({ error: 'There is no prompt in that request.' });
   if (prompt.length > 8000) return res.status(400).json({ error: 'That prompt is too long.' });
 
-  const used = usageThisMonth(req.user.id);
+  const used = await usageThisMonth(req.user.id);
   const gate = checkAllowance(req.user, used, 'text');
   if (!gate.ok) return res.status(402).json({ error: gate.reason, code: gate.code });
 
@@ -127,7 +131,7 @@ router.post('/text', requireUser, express.json({ limit: '256kb' }), async (req, 
       body.generationConfig = { responseMimeType: 'application/json', responseSchema: req.body.schema };
     }
     const out = await callWithFallback('text', body);
-    recordUsage(req.user.id, 'text', 0, TEXT_COST_MICROS);
+    await recordUsage(req.user.id, 'text', 0, TEXT_COST_MICROS);
     const text = (out.candidates?.[0]?.content?.parts || []).map(p => p.text || '').join('').trim();
     res.json({ text });
   } catch (e) {
@@ -139,7 +143,7 @@ router.post('/tts', requireUser, express.json({ limit: '256kb' }), async (req, r
   const script = String(req.body.script || '').trim();
   if (!script) return res.status(400).json({ error: 'There is nothing to speak.' });
 
-  const used = usageThisMonth(req.user.id);
+  const used = await usageThisMonth(req.user.id);
   const gate = checkAllowance(req.user, used, 'tts', script.length);
   if (!gate.ok) return res.status(402).json({ error: gate.reason, code: gate.code });
 
@@ -164,12 +168,12 @@ router.post('/tts', requireUser, express.json({ limit: '256kb' }), async (req, r
 
     /* Charged on what was actually spoken, after the call succeeded — a
        failed request should never appear on someone's allowance. */
-    recordUsage(req.user.id, 'tts', script.length, ttsCostMicros(script.length));
+    await recordUsage(req.user.id, 'tts', script.length, ttsCostMicros(script.length));
 
     res.json({
       audio: part.inlineData.data,                 // base64 PCM, as Google returns it
       mimeType: part.inlineData.mimeType || 'audio/L16;rate=24000',
-      allowance: allowanceSummary(req.user, usageThisMonth(req.user.id))
+      allowance: allowanceSummary(req.user, await usageThisMonth(req.user.id))
     });
   } catch (e) {
     res.status(502).json({ error: String(e.message || e) });

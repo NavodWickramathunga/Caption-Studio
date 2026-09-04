@@ -1,0 +1,48 @@
+# Nothing is run on a laptop on this project, so the first thing that
+# ever executes the code is GitHub. This is the cheapest possible
+# version of that: parse every file and make sure the dependencies
+# actually resolve and load.
+#
+# It is not a test suite. It catches the class of mistake that is
+# otherwise only discovered by a failed Cloud Run deploy — a typo, a
+# missing bracket, a module that was never added to package.json.
+name: check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  parse:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install
+        run: npm install --no-audit --no-fund
+
+      - name: Parse every source file
+        run: npm run check
+
+      - name: Load the server modules
+        # Catches a bad require or a missing dependency, which parsing
+        # alone will not. The server itself is never started.
+        run: |
+          node -e "
+            require('./server/plans.js');
+            require('./server/db.js');
+            require('./server/auth.js');
+            console.log('modules load');
+          "
+
+      - name: Warn if the lockfile is behind
+        run: |
+          if ! grep -q '@google-cloud/firestore' package-lock.json 2>/dev/null; then
+            echo '::warning::package-lock.json predates the Firestore dependency. Dockerfile uses npm install for now; regenerate the lockfile and switch it to npm ci.'
+          fi
