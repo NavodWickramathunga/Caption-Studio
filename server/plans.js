@@ -54,14 +54,25 @@ const PLANS = {
 
 const planFor = user => PLANS[(user && user.plan) || 'free'] || PLANS.free;
 
-/* Answers "may this call happen", and says why not in words a customer
-   can act on. Checked before the call so a refusal costs nothing. */
+/* Answers "may this call happen", and says why not in words a customer can
+   act on.
+
+   The wording deliberately names no plan. While advertising is the only
+   revenue there is nothing to upgrade to, so "the Free limit" would be
+   pointing at a door that does not exist and inviting a question — what
+   does the paid one cost? — with no answer. These read as a monthly
+   allowance instead, which is what they are. Put the plan name back when
+   there is something to sell. */
 function checkAllowance(user, used, kind, chars) {
   const p = planFor(user);
 
   if (kind === 'text') {
     if (used.textCalls >= p.textCallsPerMonth) {
-      return { ok: false, reason: `That is ${p.textCallsPerMonth} scripts this month, which is the ${p.label} limit.`, code: 'quota_text' };
+      return {
+        ok: false,
+        code: 'quota_text',
+        reason: `That is ${p.textCallsPerMonth} scripts this month, which is the monthly limit. It resets at the start of next month.`
+      };
     }
     return { ok: true };
   }
@@ -70,21 +81,21 @@ function checkAllowance(user, used, kind, chars) {
     return {
       ok: false,
       code: 'too_long',
-      reason: `That script is ${chars} characters and ${p.label} speaks up to ${p.ttsCharsPerCall} at a time.`
+      reason: `That script is ${chars} characters and up to ${p.ttsCharsPerCall} can be spoken at a time. Shorten it, or make it in two parts.`
     };
   }
   if (used.ttsCalls >= p.ttsCallsPerMonth) {
     return {
       ok: false,
       code: 'quota_tts',
-      reason: `That is ${p.ttsCallsPerMonth} voiceovers this month, which is the ${p.label} limit.`
+      reason: `That is ${p.ttsCallsPerMonth} voiceovers this month, which is the monthly limit. It resets at the start of next month.`
     };
   }
   if (used.ttsChars + chars > p.ttsCharsPerMonth) {
     return {
       ok: false,
       code: 'quota_tts_chars',
-      reason: `This would pass the ${p.ttsCharsPerMonth.toLocaleString()} characters ${p.label} speaks per month.`
+      reason: `This would pass the ${p.ttsCharsPerMonth.toLocaleString()} characters of speech allowed per month. It resets at the start of next month.`
     };
   }
   return { ok: true };

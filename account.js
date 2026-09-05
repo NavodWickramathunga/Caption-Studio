@@ -169,7 +169,10 @@ function csRender() {
     box.innerHTML = signInReady
       ? `<span class="acct-note">Sign in to make voiceovers</span><span id="gsiButton"></span>`
       : `<span class="acct-note">Sign-in is not configured on this server</span>`;
-    csAds(false);
+    /* A visitor who has not signed in is still a visitor, and advertising is
+       currently the only thing paying for any of this — so the slot runs for
+       them too. It stops only for a plan that has bought its way out of it. */
+    csAds(true);
     /* renderButton needs the element to exist, so it runs after this. */
     if (signInReady && window.google && google.accounts && google.accounts.id) {
       google.accounts.id.renderButton(document.getElementById("gsiButton"),
@@ -179,21 +182,20 @@ function csRender() {
   }
 
   const a = allowance || {};
-  const v = a.voiceovers || { used: 0, limit: 0 };
-  const left = Math.max(0, v.limit - v.used);
-  const pct = v.limit ? Math.min(100, Math.round((v.used / v.limit) * 100)) : 0;
-  const low = left <= Math.max(1, Math.round(v.limit * 0.2));
 
+  /* No plan badge and no meter while the only revenue is advertising.
+     Naming a tier "Free" tells people there is a paid one and invites the
+     question of what it costs, which there is no answer to yet; a counter
+     ticking down reads as a trial running out. The monthly ceiling is still
+     enforced on the server — it has to be, because speech costs real money
+     and ads recover only a fraction of it — but it is a wallet guard, not a
+     sales pitch, so it stays out of sight until the user actually reaches
+     it and the refusal explains itself. */
   box.innerHTML = `
     <div class="acct">
       ${user.picture ? `<img class="acct-pic" src="${user.picture}" alt="">` : ""}
       <div class="acct-who">
         <b>${csEsc(user.name || user.email)}</b>
-        <span class="acct-plan">${csEsc(a.planLabel || "Free")}</span>
-      </div>
-      <div class="acct-meter" title="Voiceovers used this month">
-        <div class="acct-bar"><i style="width:${pct}%"></i></div>
-        <span class="${low ? "low" : ""}">${left} left</span>
       </div>
       <button id="acctOut" class="ghost">Sign out</button>
     </div>
