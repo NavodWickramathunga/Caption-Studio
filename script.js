@@ -4244,9 +4244,26 @@ function drawCta(ctx, W, H, t) {
   /* Clear of the strip each platform covers with its own buttons, so the
      sticker is not asking for a follow from underneath a share icon. */
   const cx = W / 2;
-  const cy = c.pos === "top"
+  let cy = c.pos === "top"
     ? H * SAFE.top + pillH * 0.9
     : H * (1 - SAFE.bottom) - pillH * 0.9;
+
+  /* Clearing the platform's own buttons is only half of it: the captions are
+     down here too, and a pill laid over the words is worse than no pill. Step
+     back from the caption band by half a pill, and only as far as the safe
+     zone on the far side allows — being pushed under a share button to avoid
+     a caption is not an improvement. */
+  const band = captionBand(H);
+  const clear = pillH * 0.62;
+  if (cy + pillH / 2 > band.top - clear && cy - pillH / 2 < band.bottom + clear) {
+    if (c.pos === "top") {
+      cy = Math.max(cy, band.bottom + clear + pillH / 2);
+      cy = Math.min(cy, H * (1 - SAFE.bottom) - pillH * 0.9);
+    } else {
+      cy = Math.min(cy, band.top - clear - pillH / 2);
+      cy = Math.max(cy, H * SAFE.top + pillH * 0.9);
+    }
+  }
 
   const rise = (1 - appear) * H * 0.05 * (c.pos === "top" ? -1 : 1);
   const pulse = held ? 1 + 0.025 * Math.sin(age * 7.5) : 1;
