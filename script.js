@@ -972,6 +972,17 @@ const CAN_SPEAK = !!(TTS && window.SpeechSynthesisUtterance);
 let voices = [], utter = null, speakRun = null;
 let savedVoiceApplied = false;   // the Voice Match pick is applied once, then you're in charge
 
+/* Choosing online voices is a decision about your script leaving the machine,
+   so it is made once and remembered - re-ticking a box every visit is how a
+   deliberate choice turns into an accident. */
+function setLocalOnly(on, remember) {
+  $("localOnly").checked = on;
+  $("netWarn").style.display = on ? "none" : "";
+  if (remember !== false) {
+    try { localStorage.setItem("captionStudio.localVoicesOnly", on ? "1" : "0"); } catch (e) {}
+  }
+}
+
 function loadVoices() {
   if (!CAN_SPEAK) return;
   voices = TTS.getVoices() || [];
@@ -1034,8 +1045,7 @@ function loadVoices() {
       } else if (!voices[idx].localService && localOnly) {
         // Natural voices are online ones, so the offline filter would hide
         // the choice. Turn it off and rebuild rather than dropping it.
-        $("localOnly").checked = false;
-        $("netWarn").style.display = "";
+        setLocalOnly(false);
         loadVoices();
         return;
       } else if (sel.querySelector('option[value="' + idx + '"]')) {
@@ -1053,14 +1063,27 @@ function loadVoices() {
   if (!applied && keep && sel.querySelector('option[value="' + keep + '"]')) sel.value = keep;
 
   $("edgeTip").style.display = (!natural.length && localOnly) ? "" : "none";
-  setVoStatus(natural.length ? natural.length + " natural-sounding voices available." : "");
+  if (natural.length) {
+    setVoStatus(natural.length + " natural-sounding voices available" +
+      (localOnly ? "." : " — the ones marked “online” are spoken over the internet."));
+  } else if (!localOnly) {
+    // They opted in to online voices and still got nothing good: say so,
+    // rather than leaving an empty status that reads like success.
+    setVoStatus("Online voices are on, but this browser doesn't offer any natural ones. " +
+                "Microsoft Edge is the one that does.", "warn");
+  } else {
+    setVoStatus("");
+  }
 }
 if (CAN_SPEAK) {
+  let pref = null;
+  try { pref = localStorage.getItem("captionStudio.localVoicesOnly"); } catch (e) {}
+  if (pref !== null) setLocalOnly(pref === "1", false);
   loadVoices();
   TTS.addEventListener("voiceschanged", loadVoices);
 }
 $("localOnly").addEventListener("change", e => {
-  $("netWarn").style.display = e.target.checked ? "none" : "";
+  setLocalOnly(e.target.checked);
   loadVoices();
 });
 
@@ -1289,7 +1312,15 @@ function speakScript(recordTimings) {
     video.muted = false;
     utter = null; speakRun = null;
     if (ev.error !== "interrupted" && ev.error !== "canceled") {
-      setVoStatus("The voice stopped: " + ev.error + ". Try another voice.", "warn");
+      // An online voice needs the network, so its failures read as a mystery
+      // unless the message says where the voice was actually coming from.
+      const v = voices[+$("voice").value];
+      const online = v && !v.localService;
+      setVoStatus(online
+        ? "The voice stopped: " + ev.error + ". “" + v.name.replace(/^Microsoft /, "") +
+          "” is spoken over the internet — check the connection, or tick “Offline voices only” " +
+          "to use a voice on this machine."
+        : "The voice stopped: " + ev.error + ". Try another voice.", "warn");
     }
     syncTransport();
   };
