@@ -4209,6 +4209,81 @@ function setAiVoiceStatus(msg, kind) {
   el.textContent = msg;
 }
 
+/* ============================================================
+   Fitting a made voice to the video.
+
+   The spoken voice in step 2 fits by re-reading the script at a new rate
+   (autoFit). A voice that came back as a file cannot be re-read — the
+   audio is all there is — so it has to be stretched after the fact.
+
+   Resampling it would fit the length and wreck the voice: play a 24 kHz
+   recording slower and the pitch drops with it. This overlaps short
+   windows of the original at a different spacing instead, which changes
+   how long it takes to say without changing who is saying it.
+
+   The window is nudged within a few milliseconds to the spot that lines
+   up best with what has already been written (WSOLA). Without that
+   search the overlaps fight each other and the voice develops a warble.
+   ============================================================ */
+const FIT_MIN = 0.72, FIT_MAX = 1.38;   // past this, speech stops sounding human
+
+function timeStretch(pcm, sr, ratio) {
+  if (!isFinite(ratio) || Math.abs(ratio - 1) < 0.005) return pcm;
+  const win = Math.max(64, Math.round(sr * 0.045));   // 45 ms
+  const half = win >> 1;
+  const synHop = half;                                 // 50% overlap
+  const anaHop = Math.max(1, Math.round(synHop / ratio));
+  const search = Math.round(sr * 0.008);               // +/- 8 ms to hunt in
+  const outLen = Math.max(1, Math.round(pcm.length * ratio));
+  const acc = new Float32Array(outLen + win);
+  const norm = new Float32Array(outLen + win);
+  const w = new Float32Array(win);
+  for (let i = 0; i < win; i++) w[i] = 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / (win - 1));
+
+  let ana = 0, syn = 0;
+  while (syn + win < outLen + win && ana < pcm.length - win) {
+    let best = 0;
+    if (syn > 0) {
+      /* Correlate the candidate against the tail already laid down, so the
+         waveform continues rather than restarting mid-cycle. Stepping by 4
+         is enough to find the peak and keeps this real-time. */
+      let bestScore = -Infinity;
+      for (let d = -search; d <= search; d++) {
+        const a = ana + d;
+        if (a < 0 || a + half >= pcm.length) continue;
+        let s = 0;
+        for (let i = 0; i < half; i += 4) s += pcm[a + i] * acc[syn + i];
+        if (s > bestScore) { bestScore = s; best = d; }
+      }
+    }
+    const a0 = Math.max(0, Math.min(pcm.length - win, ana + best));
+    for (let i = 0; i < win; i++) { acc[syn + i] += pcm[a0 + i] * w[i]; norm[syn + i] += w[i]; }
+    ana += anaHop; syn += synHop;
+  }
+
+  const out = new Float32Array(outLen);
+  for (let i = 0; i < outLen; i++) out[i] = norm[i] > 1e-6 ? acc[i] / norm[i] : acc[i];
+  return out;
+}
+
+/* Float samples back to the raw 16-bit bytes pcmToWavBlob expects. */
+function floatToPcmBytes(f32) {
+  const i16 = new Int16Array(f32.length);
+  for (let i = 0; i < f32.length; i++) {
+    const v = Math.max(-1, Math.min(1, f32[i]));
+    i16[i] = v < 0 ? v * 0x8000 : v * 0x7fff;
+  }
+  return new Uint8Array(i16.buffer);
+}
+
+/* The length of the footage, which is not totalTime() — that returns the
+   longer of video and audio, so once a too-long voiceover is loaded it
+   reports the voiceover and the thing would be measured against itself. */
+function videoLength() {
+  if (S.clips.length) return totalClipDuration();
+  return isFinite(video.duration) ? video.duration : 0;
+}
+
 /* The model returns headerless 16-bit PCM, which no browser will decode.
    Wrap it in the 44-byte WAV header they all understand. */
 function pcmToWavBlob(pcm, sampleRate) {
@@ -4232,7 +4307,11 @@ function pcmToWavBlob(pcm, sampleRate) {
   return new Blob([buf], { type: "audio/wav" });
 }
 
-async function makeVoiceFile() {
+/* opts.skipTiming: the fast track already runs the listener over this
+   recording straight afterwards, so timing it here would be the same work
+   done twice. The click handler passes a DOM Event, which has no such
+   flag, so pressing the button times it. */
+async function makeVoiceFile(opts) {
   const btn = $("btnMakeVoiceFile");
   const text = scriptEl.value.trim();
   if (!text) { setAiVoiceStatus("Paste your script in step 3 first — that's what gets spoken.", "warn"); return; }
@@ -4346,26 +4425,88 @@ async function makeVoiceFile() {
     const bin = atob(audioB64);
     const pcm = new Uint8Array(bin.length);
     for (let i = 0; i < bin.length; i++) pcm[i] = bin.charCodeAt(i);
-    const wav = pcmToWavBlob(pcm, rate);
+    let wav = pcmToWavBlob(pcm, rate);
+
+    /* Fit it to the footage while it is still just audio. Doing this before
+       the words are timed means the timing is taken against the recording
+       that actually ships, rather than against one that is about to change
+       length underneath it. */
+    const vid = videoLength();
+    let fitNote = "";
+    if (vid > 0.5) {
+      setAiClockLabel(btn, "Fitting it to the video");
+      try {
+        const mono = await decodeMono(wav, rate);
+        const spoken = mono.length / rate;
+        const ratio = vid / spoken;
+        if (Math.abs(ratio - 1) <= FIT_TOLERANCE) {
+          fitNote = `It already fits the video — ${spoken.toFixed(1)}s against ${vid.toFixed(1)}s. `;
+        } else if (ratio < FIT_MIN || ratio > FIT_MAX) {
+          /* Stretching this far turns a narrator into a robot. The honest
+             move is to leave the voice alone and say what would fix it. */
+          fitNote = `The voice is ${spoken.toFixed(1)}s against a ${vid.toFixed(1)}s video — ` +
+                    `too far apart to stretch without wrecking it, so it's been left alone. ` +
+                    `${spoken > vid ? "Shorten the script" : "Lengthen the script"} or change the clips. `;
+        } else {
+          wav = pcmToWavBlob(floatToPcmBytes(timeStretch(mono, rate, ratio)), rate);
+          fitNote = `Stretched from ${spoken.toFixed(1)}s to ${vid.toFixed(1)}s to fit the video ` +
+                    `(${ratio > 1 ? "slower" : "faster"}, same pitch). `;
+        }
+      } catch (e) {
+        // A voice that did not fit still beats no voice.
+        fitNote = `Couldn't measure it against the video (${String((e && e.message) || e)}), ` +
+                  `so the voice is as it came back. `;
+      }
+    }
 
     // Hand it over as THE voiceover, then switch to the tab that shows it,
     // so what happens next is visible rather than silently rearranged.
     useVoiceover(wav, "voice-" +
       (cast ? cast.map(c => c.name.toLowerCase()).join("-") : voice.toLowerCase()) + ".wav");
     setMode("file");
-    stopAiClock(btn, "✅ Voice made", 2600);
+
     /* Any timing from before this voice existed was taken against a
        different reading — a tap-along, or the browser speaking at its own
-       pace. Saying nothing is how captions end up drifting against a
-       voiceover that sounds fine on its own. */
-    const stale = S.words.some(w => w.start !== null);
-    say(`Voice made — ${(wav.size / 1048576).toFixed(1)} MB, ${rate / 1000} kHz. ` +
-        `It's loaded as your voiceover, so the MP4 will carry it. ` +
-        (stale
-          ? `Your word timings were taken against a different reading, so they no longer ` +
-            `match — re-time them in step 4 before exporting, or the captions will drift.`
-          : `Time it in step 4, then export — no screen sharing needed.`),
-        stale ? "warn" : "ok");
+       pace — so it no longer matches. Sending you to step 4 to redo it by
+       hand was asking for work the tool can do itself: this voice was just
+       made from this exact script, so the words and the sound are both
+       already here. Same listener "⏱ Time it for me" uses, on this
+       machine, no key. */
+    const hadTimings = S.words.some(w => w.start !== null);
+    let report = null, timingFailed = null;
+    if (S.words.length && !(opts && opts.skipTiming)) {
+      setAiClockLabel(btn, "Timing the words to it");
+      try {
+        report = await autoTimeFromAudio();
+        renderChips();
+        refreshExports();
+        updateSafeZoneWarning();
+      } catch (e) {
+        // Falls through to the old advice: the voice is still good, only
+        // the timing did not come, and that is what gets said.
+        timingFailed = String((e && e.message) || e);
+      }
+    }
+    stopAiClock(btn, report ? "✅ Voice + timings" : "✅ Voice made", 2600);
+
+    const made = `Voice made — ${(wav.size / 1048576).toFixed(1)} MB, ${rate / 1000} kHz. ` +
+                 `It's loaded as your voiceover, so the MP4 will carry it. ` + fitNote;
+    if (report) {
+      say(made + `The words are timed to it too — ${S.words.length} words across ` +
+          `${report.speechSeconds}s of talking. Check step 4 and click any word that looks off.`, "ok");
+      showCoachNotes([describeDeadAir(report.deadAir || []), pacingReport()].filter(Boolean),
+                     (report.deadAir || []).length > 0);
+    } else if (timingFailed) {
+      say(made + `Timing it to this voice didn't work (${timingFailed}) — ` +
+          (hadTimings
+            ? `and the timings you have were taken against a different reading, so they no longer match. `
+            : ``) +
+          `Use “⏱ Time it for me” in step 4 before exporting, or the captions will drift.`, "warn");
+    } else if (opts && opts.skipTiming) {
+      say(made + `Timing it against this recording next.`, "ok");
+    } else {
+      say(made + `Time it in step 4, then export — no screen sharing needed.`, "ok");
+    }
   } catch (e) {
     stopAiClock(btn);
     const why = String((e && e.message) || e);
@@ -4459,7 +4600,7 @@ async function runPipeline(topic, opts) {
 
   report("Speaking it…");
   if ($("aiVoice") && opts && opts.voice) $("aiVoice").value = opts.voice;   // keep step 2 honest
-  await makeVoiceFile();
+  await makeVoiceFile({ skipTiming: true });
   if (!S.voiceoverBlob) throw new Error("The voice was not made, so there is nothing to time against.");
 
   /* Whisper, on this machine, against the recording just made — the only
