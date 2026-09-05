@@ -635,3 +635,50 @@ kbd{
 .clip-snd.ok{opacity:1}
 .clip-snd.bad{opacity:1;filter:saturate(1.4)}
 @media (max-width:520px){ .clip-row{grid-template-columns:22px 1fr auto} }
+
+/* ---------- phone ----------
+   Everything here is one column on a narrow screen, with targets big enough
+   to hit with a thumb. iOS zooms the whole page when a font under 16px takes
+   focus, which is why the inputs are sized up rather than down. */
+@media (max-width:640px){
+  .grid2{grid-template-columns:1fr}
+  main{padding:12px}
+  .topbar{padding:12px}
+  .topbar h1{font-size:24px}
+  .topbar p{font-size:12px}
+  .step{padding:14px}
+
+  /* a tapped input must not zoom the page */
+  .txt,input[type=text],input[type=password],textarea,select{font-size:16px!important}
+
+  /* thumbs, not cursors */
+  .vo-actions{gap:10px}
+  .vo-actions button,.exports button,.filebtn,.stylechip{
+    min-height:44px;padding:11px 14px;font-size:13px}
+  .vo-actions button{flex:1 1 100%}
+  .chk{min-height:38px;display:flex;align-items:center;gap:8px}
+  input[type=range]{height:34px}
+
+  /* the transport bar wraps instead of running off the side */
+  .transport{flex-wrap:wrap;gap:8px;justify-content:center}
+  .transport button{min-height:42px;flex:1 1 auto}
+  .clock{flex:1 1 100%;text-align:center}
+
+  /* the step rail scrolls sideways rather than stacking six rows deep */
+  .steprail{overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none}
+  .steprail::-webkit-scrollbar{display:none}
+  .steprail a{flex:0 0 auto}
+
+  /* a tall phone should still show the whole frame */
+  .frame{max-height:56vh}
+  .scrub{height:34px}
+  .scrub-head{width:18px;height:18px}
+}
+
+/* Very small phones: the caption chips get their own row rather than being
+   squeezed to two characters wide. */
+@media (max-width:400px){
+  .topbar h1{font-size:21px}
+  .step{padding:12px}
+  .frame{max-height:48vh}
+}

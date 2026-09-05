@@ -16,7 +16,11 @@
   <button id="projectsBtn" class="api-key-btn" style="display:none" title="Your saved projects">📁 Projects</button>
   <button id="apiKeyBtn" class="api-key-btn">🔑 Gemini Key</button>
   <div id="acctBox" class="acct-box"></div>
-  <div class="privacy">Your clips never leave this machine · <a href="/legal" style="color:inherit">Terms &amp; privacy</a></div>
+  <!-- It used to say "never", which stopped being true the moment a reference
+       video could be sent off to be watched. Your own footage still never
+       goes anywhere; the one thing that does is the clip you hand over to be
+       studied, and only when you press the button. -->
+  <div class="privacy">Your clips stay on this machine · <a href="/legal" style="color:inherit">Terms &amp; privacy</a></div>
 </div>
 
 <!-- Five steps in the order they have to happen. The voice must exist before
@@ -68,6 +72,9 @@
     </div>
     <div class="transport">
       <button id="playBtn" disabled>Play</button>
+      <!-- Watching the whole thing used to mean rendering the whole thing. -->
+      <button id="previewBtn" class="primary" disabled
+              title="Plays the finished video from the start — captions, sticker, watermark and end card. No render, no download.">▶ Preview the final cut</button>
       <button id="restartBtn" class="ghost" disabled>Back to start</button>
       <button id="backBtn" class="ghost" disabled title="Back one second">−1s</button>
       <button id="fwdBtn" class="ghost" disabled title="Forward one second">+1s</button>
@@ -78,6 +85,197 @@
 
   <!-- ============ STEPS ============ -->
   <div class="steps">
+
+    <!-- The step that used to happen in another tab: find a video that worked,
+         ask a model what made it work, and get a script plus a prompt back.
+         Everything after it already lived here. -->
+    <section class="step autocard" id="stepRef">
+      <h2><i>🎬</i>Start from a video you liked</h2>
+      <p class="hint">Give it a reel that did well. It works out why, then writes you a script
+        in that shape and a prompt you can hand to a video model. The script drops straight
+        into step 3.</p>
+
+      <div class="grid2" style="margin-bottom:10px">
+        <div class="field">
+          <label for="aiEngine">Written by</label>
+          <select id="aiEngine">
+            <option value="gemini">Gemini</option>
+            <option value="claude">Claude</option>
+          </select>
+        </div>
+        <div class="field" id="claudeKeyWrap" style="display:none">
+          <label for="claudeKey">Your Claude key</label>
+          <input type="password" id="claudeKey" class="txt" placeholder="sk-ant-…">
+        </div>
+      </div>
+      <p class="hint" id="engineNote" style="margin:0 0 10px;font-size:11.5px"></p>
+
+      <div class="stylechips" id="refMode" style="margin-bottom:10px">
+        <button type="button" class="stylechip" aria-pressed="true"  data-mode="notes">Link or description</button>
+        <button type="button" class="stylechip" aria-pressed="false" data-mode="file">Upload the video</button>
+      </div>
+
+      <div id="refNotesWrap">
+        <div class="field">
+          <label for="refNotes">Paste the link, or say what happens in it</label>
+          <textarea id="refNotes" rows="3" class="txt" style="width:100%;resize:vertical"
+            placeholder="https://facebook.com/reel/…&#10;or: street food stall, fast cuts, big yellow captions, hook is “nobody knows about this place”"></textarea>
+        </div>
+        <p class="hint" style="margin:6px 0 0;font-size:11.5px">
+          Nothing leaves this machine except the words you type here.
+        </p>
+      </div>
+
+      <div id="refFileWrap" style="display:none">
+        <div class="filerow">
+          <label class="filebtn">Choose the video…<input type="file" id="refFile" accept="video/*"></label>
+          <span class="filename none" id="refFileName">no video</span>
+        </div>
+        <p class="hint" style="margin:7px 0 0;font-size:11.5px;padding:8px 10px;border-radius:7px;
+           background:rgba(224,179,65,.10);border:1px solid rgba(224,179,65,.35);color:#e8cf94">
+          ⚠ This one <b>is</b> sent to Google to be watched — it is the only way a model can see it.
+          Your own clips in step 1 still never leave this machine. Keep it under 18 MB.
+        </p>
+      </div>
+
+      <div class="grid2" style="margin-top:10px">
+        <div class="field">
+          <label for="refAbout">What is <i>your</i> video about?</label>
+          <input type="text" id="refAbout" class="txt" placeholder="e.g. my bakery's new cinnamon buns">
+        </div>
+        <div class="field">
+          <label for="refLang">Language</label>
+          <select id="refLang">
+            <option value="">English</option>
+            <option value="Sinhala">Sinhala</option>
+            <option value="Tamil">Tamil</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="vo-actions">
+        <button id="btnStudy" class="primary">🔍 Study it and write my script</button>
+      </div>
+      <div class="status" id="refStatus" role="status" aria-live="polite"></div>
+
+      <div id="refOut" style="display:none;margin-top:12px">
+        <div class="field">
+          <label for="refWhy">Why that one worked</label>
+          <textarea id="refWhy" rows="3" class="txt" style="width:100%;resize:vertical" readonly></textarea>
+        </div>
+        <div class="field" style="margin-top:9px">
+          <label for="refScript">Your script <span style="opacity:.7">(also dropped into step 3)</span></label>
+          <textarea id="refScript" rows="4" class="txt" style="width:100%;resize:vertical"></textarea>
+        </div>
+        <div class="field" style="margin-top:9px">
+          <label for="refPrompt">Prompt for the video model</label>
+          <textarea id="refPrompt" rows="4" class="txt" style="width:100%;resize:vertical"></textarea>
+        </div>
+        <div class="vo-actions">
+          <button id="btnCopyPrompt">📋 Copy the prompt</button>
+          <button id="btnUseScript">Use this script →</button>
+          <button id="btnGenVeo" class="primary">🎥 Make the video with Veo</button>
+          <button id="btnGenCustom">Make it with my own API</button>
+        </div>
+        <p class="hint" style="margin:8px 0 0;font-size:11.5px">
+          Or copy the prompt into whatever you already use, then bring the video back in step 1.
+          Nothing here is compulsory.
+        </p>
+        <div class="status" id="genStatus" role="status" aria-live="polite"></div>
+      </div>
+
+      <details class="batchbox" style="margin-top:12px">
+        <summary>Point it at a different video model</summary>
+        <p class="hint" style="margin:9px 0 8px">
+          Anything that takes a prompt over HTTP. <code>{{prompt}}</code> is replaced with the
+          prompt above. If the reply is a video it is loaded straight in; if it is JSON, say
+          where the link sits.
+        </p>
+        <div class="field">
+          <label for="genUrl">Endpoint</label>
+          <input type="text" id="genUrl" class="txt" placeholder="https://api.example.com/v1/video">
+        </div>
+        <div class="grid2" style="margin-top:8px">
+          <div class="field">
+            <label for="genHeader">Auth header</label>
+            <input type="text" id="genHeader" class="txt" placeholder="Authorization">
+          </div>
+          <div class="field">
+            <label for="genKey">Its value</label>
+            <input type="password" id="genKey" class="txt" placeholder="Bearer sk-…">
+          </div>
+        </div>
+        <div class="field" style="margin-top:8px">
+          <label for="genBody">Body (JSON)</label>
+          <textarea id="genBody" rows="3" class="txt" style="width:100%;resize:vertical"
+            placeholder='{"prompt": "{{prompt}}", "duration": 8}'></textarea>
+        </div>
+        <div class="field" style="margin-top:8px">
+          <label for="genPath">Where the video link sits in the reply</label>
+          <input type="text" id="genPath" class="txt" placeholder="data.0.url">
+        </div>
+        <div class="vo-actions">
+          <button id="btnSaveGen">Save this setup</button>
+        </div>
+        <p class="hint" style="margin:7px 0 0;font-size:11.5px">
+          Kept in this browser only, the same as your Gemini key.
+        </p>
+      </details>
+    </section>
+
+    <!-- The video is only half of a post. The title, the description and the
+         tags decide whether anyone is shown it, and they were being written
+         somewhere else. -->
+    <section class="step autocard" id="stepPost">
+      <h2><i>📣</i>Write the post</h2>
+      <p class="hint">Titles, descriptions, tags and a Facebook caption, written from the same
+        script the video says — so the words match what is actually in it.</p>
+
+      <div class="field">
+        <label for="postKeywords">What should it be found for?</label>
+        <input type="text" id="postKeywords" class="txt"
+               placeholder="e.g. colombo street food, isso wade, sri lanka food tour">
+      </div>
+      <div class="grid2" style="margin-top:10px">
+        <div class="field">
+          <label for="postLang">Language</label>
+          <select id="postLang">
+            <option value="">English</option>
+            <option value="Sinhala">Sinhala</option>
+            <option value="Tamil">Tamil</option>
+          </select>
+        </div>
+      </div>
+      <div class="vo-actions">
+        <button id="btnWritePost" class="primary">✍️ Write the post</button>
+      </div>
+      <div class="status" id="postStatus" role="status" aria-live="polite"></div>
+
+      <div id="postOut" style="display:none;margin-top:12px">
+        <div class="field">
+          <label for="ytTitle">YouTube title</label>
+          <input type="text" id="ytTitle" class="txt">
+        </div>
+        <div class="field" style="margin-top:9px">
+          <label for="ytDesc">YouTube description</label>
+          <textarea id="ytDesc" rows="5" class="txt" style="width:100%;resize:vertical"></textarea>
+        </div>
+        <div class="field" style="margin-top:9px">
+          <label for="ytTags">Tags</label>
+          <textarea id="ytTags" rows="2" class="txt" style="width:100%;resize:vertical"></textarea>
+        </div>
+        <div class="field" style="margin-top:9px">
+          <label for="fbPost">Facebook caption</label>
+          <textarea id="fbPost" rows="4" class="txt" style="width:100%;resize:vertical"></textarea>
+        </div>
+        <div class="vo-actions">
+          <button id="btnCopyTitle">📋 Title</button>
+          <button id="btnCopyDesc">📋 Description</button>
+          <button id="btnCopyTags">📋 Tags</button>
+          <button id="btnCopyFb">📋 Facebook</button>
+        </div>
+      </div>
+    </section>
 
     <!-- Everything here already existed as three separate buttons. What was
          missing was the order: speak first, then time against that recording. -->
@@ -511,6 +709,11 @@
          the moment most people have already swiped. This asks mid-clip,
          while they are still watching, and gets out of the way again. -->
     <div id="ctaRow" style="display:none; gap:10px; flex-wrap:wrap; align-items:flex-end;">
+      <div class="field" style="width:150px;">
+        <label for="ctaStyle">Ask for</label>
+        <select id="ctaStyle" style="width:100%;font:inherit;font-size:13px;background:var(--panel-2);
+                color:var(--ivory);border:1px solid var(--line);border-radius:8px;padding:8px 10px"></select>
+      </div>
       <div class="field" style="flex:1; min-width:150px;">
         <label for="ctaText">Sticker says</label>
         <input type="text" id="ctaText" maxlength="22"

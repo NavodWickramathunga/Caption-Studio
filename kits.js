@@ -60,7 +60,22 @@ window.CS = window.CS || {};
         language: val('autoLang')
       },
       endCards: cards,
+      /* The wording and the length were saved but not whether the card is
+         shown at all, so applying a kit brought back an end card that was
+         switched off. Same story for the sticker: a kit is meant to be the
+         whole look, and half of it was being dropped on the floor. */
+      endCardOn: checked('endCardOn'),
       endCardSecs: Number(val('endCardSecs', 1.2)),
+      sticker: {
+        on: checked('ctaOn'),
+        style: val('ctaStyle'),
+        text: val('ctaText'),
+        at: Number(val('ctaAt', 3)),
+        secs: Number(val('ctaSecs', 3)),
+        pos: val('ctaPos'),
+        bell: checked('ctaBell')
+      },
+      platform: window.CS.currentPlatform ? window.CS.currentPlatform() : '',
       picture: window.CS.currentPicture ? window.CS.currentPicture() : null
     };
   };
@@ -91,6 +106,24 @@ window.CS = window.CS || {};
     put('spk2Voice', voice.voiceTwo);
 
     put('endCardSecs', kit.endCardSecs, 'input');
+
+    /* The platform first: it owns the safe zones and the end-card wording,
+       so setting it after would overwrite what the kit just restored. */
+    if (kit.platform && window.CS.setPlatform) window.CS.setPlatform(kit.platform);
+
+    /* Checkboxes go through putChecked, not put: an unticked box is `false`,
+       and put() throws away anything falsy, which is how "off" was silently
+       becoming "leave it as it is". */
+    putChecked('endCardOn', kit.endCardOn);
+
+    const st = kit.sticker || {};
+    putChecked('ctaOn', st.on);
+    put('ctaStyle', st.style);
+    put('ctaText', st.text, 'input');
+    put('ctaAt', st.at, 'input');
+    put('ctaSecs', st.secs, 'input');
+    put('ctaPos', st.pos);
+    putChecked('ctaBell', st.bell);
 
     if (window.CS.setAllEndCards) window.CS.setAllEndCards(kit.endCards || {});
     if (window.CS.setPicture) window.CS.setPicture(kit.picture || null);

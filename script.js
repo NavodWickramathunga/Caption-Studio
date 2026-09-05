@@ -556,6 +556,20 @@ function togglePlay() { (master().paused) ? playAll() : pauseAll(); }
 
 $("playBtn").addEventListener("click", togglePlay);
 $("restartBtn").addEventListener("click", () => seekAll(0));
+
+/* One press to watch what the export would produce. Everything drawn here
+   is drawn by the same code the render calls, so this is the finished video
+   rather than an impression of it — the only difference is that nothing is
+   written to a file. */
+if ($("previewBtn")) {
+  $("previewBtn").addEventListener("click", () => {
+    cardPreviewFrom = null;
+    seekAll(0);
+    playAll();
+    say("Playing the finished video — captions, sticker, watermark and the end card. " +
+        "Nothing is being rendered, so this is instant.", "ok");
+  });
+}
 if ($("backBtn")) $("backBtn").addEventListener("click", () => seekAll(nowTime() - 1));
 if ($("fwdBtn"))  $("fwdBtn").addEventListener("click",  () => seekAll(nowTime() + 1));
 
@@ -798,6 +812,7 @@ function syncTransport() {
   const ready = !!video.src;
   $("playBtn").disabled = !ready;
   $("restartBtn").disabled = !ready;
+  if ($("previewBtn")) $("previewBtn").disabled = !ready;
   if ($("backBtn")) $("backBtn").disabled = !ready;
   if ($("fwdBtn"))  $("fwdBtn").disabled  = !ready;
   paintScrubMarks();
@@ -1801,12 +1816,35 @@ const CTA_STYLE = {
   tiktok:   { text: "Follow",          bg: "#FE2C55", fg: "#FFFFFF", icon: "plus"  }
 };
 
+/* The asks people actually make in a reel, each with the icon that belongs
+   to it and its own little performance. Kept apart from the platform: what
+   you want asked for is not always what you are posting to, and one video
+   often wants "Like" where the next wants "Subscribe". */
+const CTA_PRESETS = [
+  { key: "auto",    label: "Match the platform" },
+  { key: "follow",  label: "Follow",         text: "Follow the page", bg: "#1877F2", icon: "thumb",  bell: false },
+  { key: "sub",     label: "Subscribe",      text: "Subscribe",       bg: "#FF0033", icon: "play",   bell: true  },
+  { key: "bell",    label: "Bell / alerts",  text: "Turn on alerts",  bg: "#FF0033", icon: "bell",   bell: false },
+  { key: "like",    label: "Like",           text: "Like this",       bg: "#E0245E", icon: "heart",  bell: false },
+  { key: "plus",    label: "Follow +",       text: "Follow",          bg: "#FE2C55", icon: "plus",   bell: false },
+  { key: "comment", label: "Comment",        text: "Tell me below",   bg: "#7A5AF8", icon: "bubble", bell: false },
+  { key: "share",   label: "Share",          text: "Send this on",    bg: "#0EA5A5", icon: "share",  bell: false },
+  { key: "save",    label: "Save",           text: "Save for later",  bg: "#E0A11B", icon: "save",   bell: false }
+];
+const ctaPreset = k => CTA_PRESETS.find(p => p.key === k);
+
 let platform = "facebook";
 try { platform = localStorage.getItem("captionStudio.platform") || "facebook"; } catch (e) {}
 if (!PLATFORMS[platform]) platform = "facebook";
 
 const plat = () => PLATFORMS[platform];
-const ctaStyle = () => CTA_STYLE[platform] || CTA_STYLE.facebook;
+/* "Match the platform" keeps the old behaviour; anything else wins over it. */
+function ctaStyle() {
+  const chosen = $("ctaStyle") && $("ctaStyle").value;
+  const p = chosen && chosen !== "auto" ? ctaPreset(chosen) : null;
+  const base = CTA_STYLE[platform] || CTA_STYLE.facebook;
+  return p ? { text: p.text, bg: p.bg, fg: "#FFFFFF", icon: p.icon } : base;
+}
 Object.defineProperty(window, "SAFE_DEBUG", { get: () => plat().safe, configurable: true });
 
 /* Kept as a name because the drawing code reads it every frame. */
@@ -1863,6 +1901,12 @@ function updateSafeZoneWarning() {
   el.textContent = v.msg;
 }
 
+/* The end card was only ever drawn while exporting, so the one part of the
+   video you could not check was the part asking for the follow — you had to
+   render the whole MP4 to find out it was wrong. It is drawn here too now,
+   over the last frame, exactly as the export draws it. */
+let cardPreviewFrom = null;
+
 function frameLoop() {
   const W = overlay.width, H = overlay.height;
   octx.clearRect(0, 0, W, H);
@@ -1880,6 +1924,17 @@ function frameLoop() {
     drawCta(octx, W, H, nowTime());
     $("tNow").textContent = fmtClock(nowTime());
     if (!scrubbing) paintScrub();
+
+    /* Once the footage runs out, hold the last frame and fade the card over
+       it — the same thing the export does, on the same clock. */
+    const cardSecs = endCardSeconds();
+    if (cardSecs > 0 && timelineEnded()) {
+      if (cardPreviewFrom === null) cardPreviewFrom = performance.now();
+      const elapsed = (performance.now() - cardPreviewFrom) / 1000;
+      drawEndCard(octx, W, H, Math.min(1, elapsed / cardSecs));
+    } else if (!timelineEnded()) {
+      cardPreviewFrom = null;              // rewound or still playing: arm it again
+    }
   }
   requestAnimationFrame(frameLoop);
 }
@@ -3689,7 +3744,7 @@ if ($("btnAutoTime")) {
       const notes = [describeDeadAir(report.deadAir || []), pacingReport()].filter(Boolean);
       say(`Timed ${S.words.length} words from ${report.from} — ${heard}, ` +
           `${report.speechSeconds}s of talking. Click any word that looks off.`, "ok");
-      showCoachNotes(notes, (report.deadAir || []).length > 0);
+      showCoachNotes(notes, (report.deadAir || []).length > 0, report.deadAir || []);
       stopAiClock(btn, "✅ Timed!", 2200);
     } catch (e) {
       stopAiClock(btn);
@@ -3746,11 +3801,28 @@ function syncCtaLabels() {
 function syncCtaText(force) {
   const el = $("ctaText");
   if (!el) return;
-  const known = Object.keys(CTA_STYLE).map(k => CTA_STYLE[k].text);
+  /* Wording you typed yourself is never overwritten. Anything still sitting
+     at one of the stock lines is treated as untouched and follows the pick. */
+  const known = Object.keys(CTA_STYLE).map(k => CTA_STYLE[k].text)
+                .concat(CTA_PRESETS.filter(p => p.text).map(p => p.text));
   if (force || !el.value.trim() || known.includes(el.value.trim())) el.value = ctaStyle().text;
-  // A bell belongs to YouTube; elsewhere it is just noise on the pill.
-  if ($("ctaBell") && force) $("ctaBell").checked = platform === "youtube";
+  if ($("ctaBell") && force) {
+    const chosen = $("ctaStyle") && $("ctaStyle").value;
+    const p = chosen && chosen !== "auto" ? ctaPreset(chosen) : null;
+    // the bell belongs to Subscribe; on a Save or Share pill it is just noise
+    $("ctaBell").checked = p ? !!p.bell : platform === "youtube";
+  }
   syncCtaLabels();
+}
+
+/* Fill the picker once, from the same list the drawing reads. */
+if ($("ctaStyle")) {
+  CTA_PRESETS.forEach(p => {
+    const o = document.createElement("option");
+    o.value = p.key; o.textContent = p.label;
+    $("ctaStyle").appendChild(o);
+  });
+  $("ctaStyle").addEventListener("change", () => syncCtaText(true));
 }
 
 if ($("ctaOn")) {
@@ -3759,7 +3831,7 @@ if ($("ctaOn")) {
     if (e.target.checked) syncCtaText(!$("ctaText").value.trim());
     syncCtaLabels();
   });
-  ["ctaAt", "ctaSecs", "ctaText", "ctaPos", "ctaBell"].forEach(id => {
+  ["ctaAt", "ctaSecs", "ctaText", "ctaPos", "ctaBell", "ctaStyle"].forEach(id => {
     if ($(id)) $(id).addEventListener("input", syncCtaLabels);
     if ($(id)) $(id).addEventListener("change", syncCtaLabels);
   });
@@ -3900,7 +3972,141 @@ function shortReason(e) {
 }
 
 /* ---- the coaching panel: what would cost you views ---- */
-function showCoachNotes(notes, isWarning) {
+/* ============================================================
+   Acting on the note, instead of only writing it.
+
+   "4 silent gaps, 2.4s in total" is a diagnosis, and leaving it there
+   makes the tool something you obey rather than something that helps.
+   The gaps are known to the millisecond and the voiceover is right here,
+   so the fix is one press: cut the silence out, then re-time the words
+   against what is left.
+
+   Only offered when the voice is a file we own. When the sound is coming
+   from the clips themselves, cutting it would mean cutting the footage,
+   which is a different and much larger promise.
+   ============================================================ */
+async function decodeAudioNative(blob) {
+  const AC = window.AudioContext || window.webkitAudioContext;
+  const ctx = new AC();
+  try {
+    const d = await ctx.decodeAudioData(await blob.arrayBuffer());
+    return { data: d.getChannelData(0), sr: d.sampleRate };
+  } finally { try { ctx.close(); } catch (e) {} }
+}
+
+async function cutDeadAir(btn) {
+  if (!S.voiceoverBlob) {
+    say("The silence is in the clips' own sound, so trimming it would mean cutting " +
+        "the footage. Load a voiceover under “Load a file”, or make one in step 2.", "warn");
+    return;
+  }
+  startAiClock(btn, "Listening");
+  try {
+    /* Measured again rather than trusted from the last run: the voice may
+       have been re-made since that note was written. */
+    setAiClockLabel(btn, "Finding the silence");
+    const { pcm, sr: dsr } = await gatherTimingAudio();
+    const segs = detectSpeechSegments(pcm, dsr);
+    const gaps = findDeadAir(segs, pcm.length / dsr);
+    if (!gaps.length) { stopAiClock(btn); say("No silence long enough to cut.", "ok"); return; }
+
+    setAiClockLabel(btn, "Cutting it out");
+    const { data, sr } = await decodeAudioNative(S.voiceoverBlob);
+
+    /* A little silence is breath; cutting to the very edge of the words
+       makes the voice sound clipped and rushed. Leave a tenth of a second
+       at each join, and take the whole of a leading or trailing gap. */
+    const PAD = 0.10;
+    const cuts = gaps.map(g => {
+      let a = g.start, b = g.end;
+      if (g.where === "in the middle") { a += PAD; b -= PAD; }
+      else if (g.where === "at the start") { b -= PAD; }
+      else { a += PAD; }
+      return [Math.max(0, a), Math.min(data.length / sr, b)];
+    }).filter(([a, b]) => b - a > 0.02).sort((p, q) => p[0] - q[0]);
+
+    if (!cuts.length) { stopAiClock(btn); say("The gaps are too short to cut safely.", "ok"); return; }
+
+    // everything that is not a cut, joined end to end
+    const keep = [];
+    let at = 0;
+    cuts.forEach(([a, b]) => { if (a > at) keep.push([at, a]); at = Math.max(at, b); });
+    if (at < data.length / sr) keep.push([at, data.length / sr]);
+
+    const total = keep.reduce((n, [a, b]) => n + Math.round((b - a) * sr), 0);
+    const out = new Float32Array(total);
+    const FADE = Math.max(8, Math.round(sr * 0.004));   // ~4ms, so joins do not click
+    let w = 0;
+    keep.forEach(([a, b]) => {
+      const s0 = Math.max(0, Math.round(a * sr)), s1 = Math.min(data.length, Math.round(b * sr));
+      const n = s1 - s0;
+      for (let i = 0; i < n; i++) {
+        let v = data[s0 + i];
+        if (i < FADE) v *= i / FADE;
+        if (i > n - FADE) v *= Math.max(0, (n - i) / FADE);
+        out[w + i] = v;
+      }
+      w += n;
+    });
+
+    const before = data.length / sr, after = total / sr;
+    useVoiceover(pcmToWavBlob(floatToPcmBytes(out), sr),
+                 (S.audioFileName || "voice.wav").replace(/\.wav$/i, "") + "-tight.wav");
+
+    /* The words were timed against the old recording, so they are wrong the
+       moment the silence goes. They are moved rather than measured again:
+       every word already sits in a stretch that was kept, so subtracting
+       the silence removed before it is exact.
+
+       Listening again would also not work. The detector sets its threshold
+       from the recording's own quietest fifth, and once the silence is gone
+       that fifth is speech — the threshold lands above the voice and it
+       hears nothing at all. Cutting the silence breaks the very thing that
+       found it. */
+    setAiClockLabel(btn, "Moving the words");
+    const shift = t => {
+      let removed = 0;
+      for (const [a, b] of cuts) {
+        if (t >= b) removed += b - a;
+        else if (t > a) return a - removed;      // inside a cut: sit on the join
+        else break;
+      }
+      return t - removed;
+    };
+    S.words.forEach(w => {
+      if (w.start !== null) w.start = Math.max(0, shift(w.start));
+      if (w.end !== null) w.end = Math.max(0, shift(w.end));
+    });
+    for (let i = 0; i < S.words.length; i++) {          // keep them strictly in order
+      const w = S.words[i];
+      if (w.start === null || w.end === null) continue;
+      if (i && S.words[i - 1].end !== null && w.start < S.words[i - 1].end) w.start = S.words[i - 1].end;
+      if (w.end <= w.start) w.end = w.start + 0.06;
+    }
+    renderChips();
+    refreshExports();
+
+    const vid = videoLength();
+    say(`Cut ${(before - after).toFixed(1)}s of silence from ${cuts.length} ` +
+        `${cuts.length === 1 ? "gap" : "gaps"} — the voice is ${after.toFixed(1)}s now, ` +
+        `down from ${before.toFixed(1)}s, and the words are timed to it.` +
+        (vid > 0.5 && vid - after > 0.4
+          ? ` Your video still runs ${vid.toFixed(1)}s, so it now outlasts the voice by ` +
+            `${(vid - after).toFixed(1)}s — trim the clips, or make the voice again to have it refitted.`
+          : ""), "ok");
+    /* No dead-air note now, and no button: what was left at each join is a
+       tenth of a second, which is breath rather than dead air. The pacing
+       line is recomputed from the moved timings, and it will have changed —
+       the same words in less time is a faster read. */
+    showCoachNotes([pacingReport()].filter(Boolean), false, []);
+    stopAiClock(btn, "✅ Tightened", 2400);
+  } catch (e) {
+    stopAiClock(btn);
+    say("Couldn't cut the silence: " + String((e && e.message) || e), "warn");
+  }
+}
+
+function showCoachNotes(notes, isWarning, gaps) {
   const box = $("coachNotes");
   if (!box) return;
   if (!notes.length) { box.style.display = "none"; return; }
@@ -3918,6 +4124,25 @@ function showCoachNotes(notes, isWarning) {
     p.append(dot, t);
     box.appendChild(p);
   });
+
+  /* The note says silence is costing you attention. The button does
+     something about it, rather than leaving you to find the gaps by hand
+     on a timeline you cannot see. */
+  const cuttable = Array.isArray(gaps) && gaps.length > 0 && !!S.voiceoverBlob;
+  if (cuttable) {
+    const secs = gaps.reduce((a, g) => a + (g.end - g.start), 0);
+    const row = document.createElement("div");
+    row.style.cssText = "margin-top:4px";
+    const b = document.createElement("button");
+    b.id = "btnCutDeadAir";
+    b.className = "primary";
+    b.style.cssText = "font-size:11.5px;padding:5px 11px;border-radius:6px;cursor:pointer";
+    b.textContent = "✂ Cut the " + secs.toFixed(1) + "s of silence and re-time";
+    b.title = "Removes the silent gaps from your voiceover, then times the words to what is left.";
+    b.addEventListener("click", () => cutDeadAir(b));
+    row.appendChild(b);
+    box.appendChild(row);
+  }
 }
 
 /* ============================================================
@@ -4139,6 +4364,48 @@ function drawCtaIcon(ctx, kind, s, colour, age) {
     ctx.moveTo(-s * 0.42, 0); ctx.lineTo(s * 0.42, 0);
     ctx.moveTo(0, -s * 0.42); ctx.lineTo(0, s * 0.42);
     ctx.stroke();
+  } else if (kind === "heart") {
+    // a heartbeat: two quick swells rather than one smooth grow
+    const beat = gesture * (0.75 + 0.25 * Math.sin(ph * 34));
+    const k = 1 + beat * 0.26;
+    ctx.scale(k, k);
+    ctx.beginPath();
+    ctx.moveTo(0, s * 0.42);
+    ctx.bezierCurveTo(-s * 0.62, s * 0.02, -s * 0.36, -s * 0.46, 0, -s * 0.16);
+    ctx.bezierCurveTo(s * 0.36, -s * 0.46, s * 0.62, s * 0.02, 0, s * 0.42);
+    ctx.closePath(); ctx.fill();
+  } else if (kind === "bell") {
+    // the standalone bell shakes on the spot
+    drawBell(ctx, s, colour, gesture * Math.sin(ph * 46) * 0.4);
+  } else if (kind === "bubble") {
+    // a speech bubble that pops up off its own tail
+    const k = 1 + gesture * 0.2;
+    ctx.translate(0, -gesture * s * 0.1);
+    ctx.scale(k, k);
+    roundRectPath(ctx, -s * 0.46, -s * 0.42, s * 0.92, s * 0.66, s * 0.2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(-s * 0.16, s * 0.22); ctx.lineTo(-s * 0.02, s * 0.5); ctx.lineTo(s * 0.12, s * 0.22);
+    ctx.closePath(); ctx.fill();
+  } else if (kind === "share") {
+    // a paper plane that flies a little way and comes back
+    ctx.translate(gesture * s * 0.22, -gesture * s * 0.14);
+    ctx.beginPath();
+    ctx.moveTo(-s * 0.46, s * 0.2);
+    ctx.lineTo(s * 0.46, -s * 0.34);
+    ctx.lineTo(s * 0.06, s * 0.44);
+    ctx.lineTo(-s * 0.04, s * 0.1);
+    ctx.closePath(); ctx.fill();
+  } else if (kind === "save") {
+    // a bookmark tucked down into the pocket
+    ctx.translate(0, gesture * s * 0.16);
+    ctx.beginPath();
+    ctx.moveTo(-s * 0.3, -s * 0.46);
+    ctx.lineTo(s * 0.3, -s * 0.46);
+    ctx.lineTo(s * 0.3, s * 0.46);
+    ctx.lineTo(0, s * 0.14);
+    ctx.lineTo(-s * 0.3, s * 0.46);
+    ctx.closePath(); ctx.fill();
   } else {
     /* The thumb presses: it tips down onto the button, dips slightly, and
        springs back up. Pivoting at the wrist rather than the middle is what
@@ -4842,7 +5109,7 @@ async function makeVoiceFile(opts) {
       say(made + `The words are timed to it too — ${S.words.length} words across ` +
           `${report.speechSeconds}s of talking. Check step 4 and click any word that looks off.`, "ok");
       showCoachNotes([describeDeadAir(report.deadAir || []), pacingReport()].filter(Boolean),
-                     (report.deadAir || []).length > 0);
+                     (report.deadAir || []).length > 0, report.deadAir || []);
     } else if (timingFailed) {
       say(made + `Timing it to this voice didn't work (${timingFailed}) — ` +
           (hadTimings
@@ -5278,7 +5545,7 @@ if ($("btnAiSync")) {
         renderChips();
         refreshExports();
         const notes = [describeDeadAir(report.deadAir || []), pacingReport()].filter(Boolean);
-        showCoachNotes(notes, (report.deadAir || []).length > 0);
+        showCoachNotes(notes, (report.deadAir || []).length > 0, report.deadAir || []);
         say(`${shortReason(e)} — so I timed the words here instead, from ${report.from}. ` +
             `Same result, no key needed: that's what “⏱ Time it for me” does.`, "ok");
         stopAiClock(btn, "✅ Timed here", 2600);
@@ -6513,6 +6780,12 @@ window.CS.currentPosPct   = () => S.posPct;
 window.CS.currentPicture  = () => S.endCardPic || null;
 window.CS.setPicture      = (dataUrl) => setEndCardPic(dataUrl, dataUrl ? 'from your kit' : null);
 
+/* Which platform the look was built for. It carries the safe zones, the
+   end-card wording and the sticker's colours, so a kit that does not
+   remember it comes back measured against the wrong frame. */
+window.CS.currentPlatform = () => platform;
+window.CS.setPlatform     = (key) => { if (PLATFORMS[key]) applyPlatform(key); };
+
 /* The sliders and the key colour are read from S rather than from an
    input, so putting them back means writing S and asking for a redraw. */
 window.CS.afterKitApplied = (look) => {
@@ -6523,3 +6796,501 @@ window.CS.afterKitApplied = (look) => {
   }
   try { renderChips(); refreshExports(); saveSessionState(); } catch (e) {}
 };
+
+/* ============================================================
+   Start from a video you liked.
+
+   This is the part of the job that used to happen somewhere else: find a
+   reel that worked, ask a model why, get a script and a prompt back, make
+   the video, bring it here. Three tabs and a lot of copying. It is one
+   panel now, and every step of it stays optional — the prompt can be taken
+   away and used anywhere, and a video made elsewhere still comes in
+   through step 1 exactly as before.
+   ============================================================ */
+const refState = { mode: "notes", file: null };
+
+function setRefStatus(msg, kind) {
+  const el = $("refStatus");
+  if (!el) return;
+  el.className = "status" + (kind ? " " + kind : "");
+  el.textContent = msg || "";
+}
+function setGenStatus(msg, kind) {
+  const el = $("genStatus");
+  if (!el) return;
+  el.className = "status" + (kind ? " " + kind : "");
+  el.textContent = msg || "";
+}
+
+if ($("refMode")) {
+  $("refMode").addEventListener("click", e => {
+    const b = e.target.closest("button[data-mode]");
+    if (!b) return;
+    refState.mode = b.dataset.mode;
+    [...$("refMode").querySelectorAll("button")].forEach(x =>
+      x.setAttribute("aria-pressed", x === b ? "true" : "false"));
+    $("refNotesWrap").style.display = refState.mode === "notes" ? "" : "none";
+    $("refFileWrap").style.display  = refState.mode === "file"  ? "" : "none";
+  });
+}
+
+const REF_MAX_MB = 18;
+
+if ($("refFile")) {
+  $("refFile").addEventListener("change", e => {
+    const f = e.target.files && e.target.files[0];
+    refState.file = f || null;
+    const nm = $("refFileName");
+    nm.textContent = f ? f.name + " · " + (f.size / 1048576).toFixed(1) + " MB" : "no video";
+    nm.classList.toggle("none", !f);
+    /* Inline media rides along inside the request, so a big file is a
+       failed request rather than a slow one. Say so before it is sent. */
+    if (f && f.size > REF_MAX_MB * 1048576) {
+      setRefStatus("That video is " + (f.size / 1048576).toFixed(0) + " MB — too big to send in " +
+                   "one piece. Trim it to the first 15 seconds, which is all a model needs to " +
+                   "see the shape of it.", "warn");
+    } else setRefStatus("");
+  });
+}
+
+const REF_SCHEMA = {
+  type: "object",
+  properties: {
+    why:    { type: "string" },
+    script: { type: "string" },
+    prompt: { type: "string" }
+  },
+  required: ["why", "script", "prompt"]
+};
+
+async function studyReference() {
+  const btn = $("btnStudy");
+  const about = ($("refAbout").value || "").trim();
+  const lang = $("refLang").value;
+  const notes = ($("refNotes").value || "").trim();
+
+  if (refState.mode === "file" && !refState.file) {
+    setRefStatus("Choose the video first.", "warn"); return;
+  }
+  if (refState.mode === "notes" && !notes) {
+    setRefStatus("Paste the link, or describe what happens in it.", "warn"); return;
+  }
+  if (refState.mode === "file" && refState.file.size > REF_MAX_MB * 1048576) {
+    setRefStatus("That video is too big to send in one piece — trim it to about 15 seconds.", "warn");
+    return;
+  }
+
+  const inLang = lang ? " Write the script in " + lang + "." : "";
+  /* A link on its own tells a text model nothing — it cannot open one. Say
+     that in the prompt rather than letting it pretend it watched. */
+  const seen = refState.mode === "file"
+    ? "Watch the attached video."
+    : "You cannot open links. Work from what is described here, and if only a link is given, " +
+      "say in “why” that you could not watch it and are answering from the format alone.";
+
+  startAiClock(btn, "Studying");
+  setRefStatus("");
+  try {
+    const prompt =
+      seen + "\n\nReference: " + (notes || "(the attached video)") + "\n\n" +
+      "The user wants to make their own short vertical video about: \"" +
+      (about || "the same subject as the reference") + "\".\n\n" +
+      "Return three things.\n" +
+      "\"why\": two or three sentences on what makes the reference hold attention — the hook, " +
+      "the pacing, the shot types, how the captions behave.\n" +
+      "\"script\": a spoken script for a 20-30 second vertical video on the user's subject, " +
+      "built in the same shape. Spoken words only, no stage directions, no markdown." + inLang + "\n" +
+      "\"prompt\": a single paragraph prompt for a text-to-video model that would produce " +
+      "footage for this script — subject, shot type, camera movement, lighting, mood, pacing. " +
+      "Describe pictures only, never words on screen, because the captions are added here.";
+
+    setAiClockLabel(btn, refState.mode === "file" ? "Watching it" : "Thinking");
+    const raw = await callGeminiApi(prompt, refState.mode === "file" ? refState.file : null, REF_SCHEMA);
+    let out;
+    try { out = typeof raw === "string" ? JSON.parse(raw) : raw; }
+    catch (e) { out = { why: "", script: String(raw || ""), prompt: "" }; }
+
+    $("refWhy").value = out.why || "";
+    $("refScript").value = out.script || "";
+    $("refPrompt").value = out.prompt || "";
+    $("refOut").style.display = "";
+    setRefStatus("Done. The script is below — press “Use this script” to send it to step 3.", "ok");
+    stopAiClock(btn, "✅ Written", 2400);
+  } catch (e) {
+    stopAiClock(btn);
+    setRefStatus(String((e && e.message) || e), "warn");
+  }
+}
+if ($("btnStudy")) $("btnStudy").addEventListener("click", studyReference);
+
+if ($("btnUseScript")) {
+  $("btnUseScript").addEventListener("click", () => {
+    const t = ($("refScript").value || "").trim();
+    if (!t) { setRefStatus("There is no script to use yet.", "warn"); return; }
+    scriptEl.value = t;
+    scriptEl.dispatchEvent(new Event("input", { bubbles: true }));
+    setRefStatus("Script is in step 3. Make the voice in step 2 and it times itself.", "ok");
+    const s3 = $("step3");
+    if (s3 && s3.scrollIntoView) s3.scrollIntoView({ behavior: "smooth", block: "start" });
+  });
+}
+
+if ($("btnCopyPrompt")) {
+  $("btnCopyPrompt").addEventListener("click", async () => {
+    const t = ($("refPrompt").value || "").trim();
+    if (!t) return;
+    try {
+      await navigator.clipboard.writeText(t);
+      setGenStatus("Prompt copied. Paste it wherever you make videos, then bring the result " +
+                   "back in step 1.", "ok");
+    } catch (e) {
+      /* The clipboard is refused in plenty of ordinary situations, and the
+         prompt is already on screen, so this is a nudge and not a failure. */
+      setGenStatus("Couldn't reach the clipboard — select the prompt above and copy it by hand.", "warn");
+    }
+  });
+}
+
+/* ---------- bringing a finished video back in ---------- */
+function useGeneratedVideo(blob, name) {
+  const file = new File([blob], name || "generated.mp4", { type: blob.type || "video/mp4" });
+  const dt = new DataTransfer();
+  dt.items.add(file);
+  loadClipFiles(dt.files);
+  $("videoName").textContent = file.name;
+  $("videoName").classList.remove("none");
+}
+
+/* ---------- Veo, on the key that is already here ---------- */
+async function generateWithVeo() {
+  const btn = $("btnGenVeo");
+  const prompt = ($("refPrompt").value || "").trim();
+  if (!prompt) { setGenStatus("There is no prompt yet.", "warn"); return; }
+  const key = getApiKey();
+  if (!key) {
+    $("apiKeyModal").classList.add("open");
+    setGenStatus("Veo runs on your own Gemini key — set it in the key box.", "warn");
+    return;
+  }
+  startAiClock(btn, "Filming");
+  setGenStatus("");
+  try {
+    const base = "https://generativelanguage.googleapis.com/v1beta";
+    const model = "models/veo-3.0-generate-001";
+    const res = await fetch(base + "/" + model + ":predictLongRunning?key=" + encodeURIComponent(key), {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ instances: [{ prompt: prompt }], parameters: { aspectRatio: "9:16" } })
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error((body.error && body.error.message) || ("HTTP " + res.status));
+
+    /* Video is not made while you wait: the first reply is a ticket, and the
+       work lands minutes later. */
+    const op = body.name;
+    if (!op) throw new Error("Veo did not start a job.");
+    const started = Date.now();
+    let done = null;
+    while (Date.now() - started < 6 * 60 * 1000) {
+      await new Promise(r => setTimeout(r, 8000));
+      setAiClockLabel(btn, "Filming — " + Math.round((Date.now() - started) / 1000) + "s");
+      const p = await fetch(base + "/" + op + "?key=" + encodeURIComponent(key));
+      const pb = await p.json().catch(() => ({}));
+      if (pb.error) throw new Error(pb.error.message || "Veo failed.");
+      if (pb.done) { done = pb; break; }
+    }
+    if (!done) throw new Error("Veo is still working after six minutes. Try again, or take the " +
+                               "prompt somewhere else.");
+
+    const r = done.response || {};
+    const uri = (r.generateVideoResponse && r.generateVideoResponse.generatedSamples &&
+                 r.generateVideoResponse.generatedSamples[0] &&
+                 r.generateVideoResponse.generatedSamples[0].video &&
+                 r.generateVideoResponse.generatedSamples[0].video.uri) ||
+                (r.generatedSamples && r.generatedSamples[0] && r.generatedSamples[0].video &&
+                 r.generatedSamples[0].video.uri) ||
+                (r.predictions && r.predictions[0] && r.predictions[0].videoUri);
+    if (!uri) throw new Error("Veo finished but returned no video.");
+
+    setAiClockLabel(btn, "Fetching it");
+    const vid = await fetch(uri + (uri.indexOf("?") >= 0 ? "&" : "?") + "key=" + encodeURIComponent(key));
+    if (!vid.ok) throw new Error("Couldn't download the finished video (HTTP " + vid.status + ").");
+    useGeneratedVideo(await vid.blob(), "veo.mp4");
+    setGenStatus("Video made and loaded into step 1. Make the voice in step 2 next.", "ok");
+    stopAiClock(btn, "✅ Filmed", 2600);
+  } catch (e) {
+    stopAiClock(btn);
+    setGenStatus(String((e && e.message) || e), "warn");
+  }
+}
+if ($("btnGenVeo")) $("btnGenVeo").addEventListener("click", generateWithVeo);
+
+/* ---------- any other model, described by you ---------- */
+const GEN_FIELDS = ["genUrl", "genHeader", "genKey", "genBody", "genPath"];
+try {
+  const saved = JSON.parse(localStorage.getItem("captionStudio.gen") || "{}");
+  GEN_FIELDS.forEach(k => { if ($(k) && saved[k]) $(k).value = saved[k]; });
+} catch (e) {}
+
+if ($("btnSaveGen")) {
+  $("btnSaveGen").addEventListener("click", () => {
+    const out = {};
+    GEN_FIELDS.forEach(k => { if ($(k)) out[k] = $(k).value; });
+    try { localStorage.setItem("captionStudio.gen", JSON.stringify(out)); } catch (e) {}
+    setGenStatus("Saved in this browser. “Make it with my own API” will use it.", "ok");
+  });
+}
+
+/* Walk a dotted path like data.0.url, so any shape of reply can be read
+   without knowing it in advance. */
+function pluck(obj, path) {
+  return String(path || "").split(".").filter(Boolean)
+    .reduce((o, k) => (o == null ? o : o[k]), obj);
+}
+
+async function generateWithCustom() {
+  const btn = $("btnGenCustom");
+  const prompt = ($("refPrompt").value || "").trim();
+  const url = ($("genUrl").value || "").trim();
+  if (!prompt) { setGenStatus("There is no prompt yet.", "warn"); return; }
+  if (!url) {
+    setGenStatus("Fill in the endpoint under “Point it at a different video model”.", "warn");
+    return;
+  }
+
+  startAiClock(btn, "Sending");
+  setGenStatus("");
+  try {
+    const headers = { "Content-Type": "application/json" };
+    const hName = ($("genHeader").value || "").trim();
+    if (hName) headers[hName] = ($("genKey").value || "").trim();
+
+    /* Escaped through JSON.stringify, because a prompt full of quotes and
+       newlines would otherwise tear the template in half. */
+    const tpl = ($("genBody").value || "{\"prompt\":\"{{prompt}}\"}").trim();
+    const body = tpl.replace(/\{\{prompt\}\}/g, JSON.stringify(prompt).slice(1, -1));
+    try { JSON.parse(body); }
+    catch (e) { throw new Error("The body is not valid JSON once the prompt is in: " + e.message); }
+
+    const res = await fetch(url, { method: "POST", headers: headers, body: body });
+    const type = res.headers.get("content-type") || "";
+    if (!res.ok) {
+      const t = await res.text().catch(() => "");
+      throw new Error("The model refused it (HTTP " + res.status + "). " + t.slice(0, 160));
+    }
+    if (/^video\//i.test(type)) {
+      useGeneratedVideo(await res.blob(), "generated.mp4");
+    } else {
+      const j = await res.json().catch(() => null);
+      if (!j) throw new Error("The reply was neither a video nor JSON.");
+      const link = pluck(j, $("genPath").value);
+      if (!link || typeof link !== "string") {
+        throw new Error("No video link at “" + ($("genPath").value || "(blank)") +
+                        "”. The reply started: " + JSON.stringify(j).slice(0, 160));
+      }
+      setAiClockLabel(btn, "Fetching it");
+      const v = await fetch(link);
+      if (!v.ok) throw new Error("Couldn't download the video (HTTP " + v.status + ").");
+      useGeneratedVideo(await v.blob(), "generated.mp4");
+    }
+    setGenStatus("Video loaded into step 1.", "ok");
+    stopAiClock(btn, "✅ Loaded", 2400);
+  } catch (e) {
+    stopAiClock(btn);
+    setGenStatus(String((e && e.message) || e), "warn");
+  }
+}
+if ($("btnGenCustom")) $("btnGenCustom").addEventListener("click", generateWithCustom);
+
+/* ============================================================
+   Claude, as a second pair of hands for the writing.
+
+   It writes the scripts, the video prompts and the post copy. It does not
+   make video — no Anthropic model does — so the Generate buttons still go
+   to Veo or to your own endpoint. It also cannot watch a video, so the
+   "upload the reference" path stays with Gemini and says so rather than
+   quietly sending a file to something that cannot see it.
+
+   Called straight over HTTP: this page has no build step and no npm, the
+   Gemini key already works the same way, and the browser header below is
+   what Anthropic requires to allow a call from a page at all.
+   ============================================================ */
+const CLAUDE_MODEL = "claude-opus-5";
+
+function getClaudeKey() {
+  try { return localStorage.getItem("claude_api_key") || ""; } catch (e) { return ""; }
+}
+function setClaudeKey(k) {
+  try {
+    if (k) localStorage.setItem("claude_api_key", k);
+    else localStorage.removeItem("claude_api_key");
+  } catch (e) {}
+}
+
+async function callClaude(promptText) {
+  const key = getClaudeKey();
+  if (!key) throw new Error("Add your Claude key first — the box is under “Written by”.");
+
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-api-key": key,
+      "anthropic-version": "2023-06-01",
+      /* Without this Anthropic refuses the request outright, because it is
+         coming from a web page rather than a server. */
+      "anthropic-dangerous-direct-browser-access": "true"
+    },
+    body: JSON.stringify({
+      model: CLAUDE_MODEL,
+      max_tokens: 8000,
+      output_config: { effort: "medium" },
+      messages: [{ role: "user", content: promptText }]
+    })
+  });
+
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const m = (body.error && body.error.message) || ("HTTP " + res.status);
+    if (res.status === 401) throw new Error("Claude refused that key.");
+    throw new Error("Claude: " + m);
+  }
+  if (body.stop_reason === "refusal") throw new Error("Claude declined to answer that one.");
+  const text = (body.content || []).filter(b => b.type === "text").map(b => b.text).join("");
+  if (!text) throw new Error("Claude sent nothing back.");
+  return text;
+}
+
+/* Both engines are asked for JSON in the prompt and the reply is dug out of
+   whatever wrapping comes back, so one parser serves both. */
+function parseJsonish(raw) {
+  if (raw && typeof raw === "object") return raw;
+  const s = String(raw || "");
+  try { return JSON.parse(s); } catch (e) {}
+  const a = s.indexOf("{"), b = s.lastIndexOf("}");
+  if (a >= 0 && b > a) { try { return JSON.parse(s.slice(a, b + 1)); } catch (e) {} }
+  return null;
+}
+
+const aiEngine = () => ($("aiEngine") && $("aiEngine").value) || "gemini";
+
+/* One door for every text job on this page. Media only ever goes to Gemini. */
+async function callWriter(promptText, mediaBlob, schema) {
+  if (aiEngine() === "claude" && !mediaBlob) {
+    const out = await callClaude(promptText +
+      "\n\nReply with JSON only — no prose around it, no code fences.");
+    return parseJsonish(out) || { };
+  }
+  const raw = await callGeminiApi(promptText, mediaBlob || null, schema || null);
+  return parseJsonish(raw) || {};
+}
+
+if ($("aiEngine")) {
+  const syncEngine = () => {
+    const isClaude = aiEngine() === "claude";
+    if ($("claudeKeyWrap")) $("claudeKeyWrap").style.display = isClaude ? "" : "none";
+    if ($("engineNote")) {
+      $("engineNote").textContent = isClaude
+        ? "Claude writes the script, the prompt and the posts. It cannot watch a video, so " +
+          "“Upload the video” still goes to Gemini. No Claude model makes video."
+        : "Gemini writes, and is the only one that can watch an uploaded reference video.";
+    }
+  };
+  $("aiEngine").addEventListener("change", syncEngine);
+  if ($("claudeKey")) {
+    $("claudeKey").value = getClaudeKey();
+    $("claudeKey").addEventListener("change", e => setClaudeKey(e.target.value.trim()));
+  }
+  syncEngine();
+}
+
+/* ============================================================
+   The post that goes with the video.
+
+   The video is only half of a post: the title, the description and the
+   tags are what decide whether anyone is shown it. Written from the same
+   script, so the words match what is actually said.
+   ============================================================ */
+const POST_SCHEMA = {
+  type: "object",
+  properties: {
+    ytTitle:       { type: "string" },
+    ytDescription: { type: "string" },
+    ytTags:        { type: "array", items: { type: "string" } },
+    fbPost:        { type: "string" },
+    hashtags:      { type: "array", items: { type: "string" } }
+  },
+  required: ["ytTitle", "ytDescription", "ytTags", "fbPost", "hashtags"]
+};
+
+async function writePosts() {
+  const btn = $("btnWritePost");
+  const keywords = ($("postKeywords").value || "").trim();
+  const script = (scriptEl.value || "").trim() || ($("refScript") ? $("refScript").value.trim() : "");
+  const lang = ($("postLang") && $("postLang").value) || "";
+
+  if (!keywords && !script) {
+    setPostStatus("Give it some keywords, or write your script in step 3 first.", "warn");
+    return;
+  }
+
+  startAiClock(btn, "Writing");
+  setPostStatus("");
+  try {
+    const prompt =
+      "Write the posting copy for a short vertical video.\n\n" +
+      (script ? "The video says this, word for word:\n" + script + "\n\n" : "") +
+      (keywords ? "Target these search terms: " + keywords + "\n\n" : "") +
+      (lang ? "Write everything in " + lang + ".\n\n" : "") +
+      "Return JSON with exactly these keys:\n" +
+      "\"ytTitle\": a YouTube title under 70 characters. Front-load the search term. " +
+      "No clickbait that the video does not pay off.\n" +
+      "\"ytDescription\": 2 short paragraphs. First line carries the search term, because " +
+      "only the first line shows before “more”. End with a line asking for the subscribe.\n" +
+      "\"ytTags\": 10 to 15 lowercase tags, specific before generic, no hashes.\n" +
+      "\"fbPost\": a Facebook caption of 2 or 3 sentences. Conversational, ends in a question, " +
+      "because comments are what Facebook pushes.\n" +
+      "\"hashtags\": 5 to 8 hashtags with the hash, mixed broad and niche.\n\n" +
+      "Do not invent facts that are not in the script.";
+
+    const out = await callWriter(prompt, null, POST_SCHEMA);
+    if (!out || !out.ytTitle) throw new Error("Nothing usable came back — try again.");
+
+    $("ytTitle").value = out.ytTitle || "";
+    $("ytDesc").value = out.ytDescription || "";
+    $("ytTags").value = (out.ytTags || []).join(", ");
+    $("fbPost").value = (out.fbPost || "") +
+                        ((out.hashtags || []).length ? "\n\n" + out.hashtags.join(" ") : "");
+    $("postOut").style.display = "";
+    /* The title limit is the one that actually bites: YouTube cuts it off
+       mid-word in search and you never see it happen. */
+    const n = ($("ytTitle").value || "").length;
+    setPostStatus("Written. Title is " + n + " characters" +
+                  (n > 70 ? " — over 70, so search will cut it off." : ", which fits.") , n > 70 ? "warn" : "ok");
+    stopAiClock(btn, "✅ Written", 2400);
+  } catch (e) {
+    stopAiClock(btn);
+    setPostStatus(String((e && e.message) || e), "warn");
+  }
+}
+
+function setPostStatus(msg, kind) {
+  const el = $("postStatus");
+  if (!el) return;
+  el.className = "status" + (kind ? " " + kind : "");
+  el.textContent = msg || "";
+}
+
+if ($("btnWritePost")) $("btnWritePost").addEventListener("click", writePosts);
+
+/* Copy buttons, each pointed at one box. */
+[["btnCopyTitle", "ytTitle"], ["btnCopyDesc", "ytDesc"],
+ ["btnCopyTags", "ytTags"], ["btnCopyFb", "fbPost"]].forEach(pair => {
+  const b = $(pair[0]);
+  if (!b) return;
+  b.addEventListener("click", async () => {
+    const t = ($(pair[1]).value || "").trim();
+    if (!t) return;
+    try { await navigator.clipboard.writeText(t); setPostStatus("Copied.", "ok"); }
+    catch (e) { setPostStatus("Couldn't reach the clipboard — select it and copy by hand.", "warn"); }
+  });
+});
