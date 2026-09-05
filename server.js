@@ -115,6 +115,11 @@ app.use(express.static(ROOT, { index: false }));
 
 app.get('*', (req, res) => {
   if (req.path === '/voice-match') return res.sendFile(path.join(ROOT, 'voice-match.html'));
+  /* Three names for one page — AdSense and app stores each ask for a
+     different one, and all three should land somewhere real. */
+  if (['/legal', '/terms', '/privacy'].includes(req.path)) {
+    return res.sendFile(path.join(ROOT, 'legal.html'));
+  }
   res.sendFile(path.join(ROOT, 'index.html'));
 });
 
