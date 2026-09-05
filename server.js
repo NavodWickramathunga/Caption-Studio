@@ -18,6 +18,7 @@ const path = require('path');
 const auth = require('./server/auth');
 const aiRoutes = require('./server/ai');
 const projectRoutes = require('./server/projects');
+const log = require('./server/log');
 const { upsertUser, usageThisMonth } = require('./server/db');
 const { allowanceSummary } = require('./server/plans');
 
@@ -32,6 +33,25 @@ app.disable('x-powered-by');
 /* The page is public; the API is not. Attaching the user to every
    request keeps that decision in one place. */
 app.use(auth.withUser);
+app.use(log.requests);
+
+/* Something to point uptime checks at that does not touch Firestore, so
+   a database wobble does not read as the whole service being down. */
+app.get('/api/health', (req, res) => res.json({ ok: true }));
+
+/* Where the browser sends its own crashes. Deliberately open to
+   signed-out visitors — a page that breaks before sign-in is exactly
+   the failure nobody would otherwise hear about. */
+app.post('/api/oops', express.json({ limit: '32kb', type: () => true }), (req, res) => {
+  const b = req.body || {};
+  log.warn('browser: ' + String(b.message || 'unknown').slice(0, 300), {
+    kind: b.kind, where: b.where, page: b.page, ua: b.ua,
+    screen: b.screen, canMp4: b.canMp4,
+    stack: b.stack ? String(b.stack).slice(0, 1500) : undefined,
+    user: req.user ? req.user.id : null
+  });
+  res.status(204).end();
+});
 
 /* ---------- who am I ---------- */
 
@@ -96,6 +116,19 @@ app.use(express.static(ROOT, { index: false }));
 app.get('*', (req, res) => {
   if (req.path === '/voice-match') return res.sendFile(path.join(ROOT, 'voice-match.html'));
   res.sendFile(path.join(ROOT, 'index.html'));
+});
+
+/* Last in the chain on purpose: anything a route threw and did not catch
+   arrives here instead of becoming Express's default HTML error page. */
+app.use(log.errors);
+
+/* A promise rejected with nobody listening kills the process on modern
+   Node. Better to write down what it was on the way out, so the crash in
+   the logs has a cause next to it rather than just a restart. */
+process.on('unhandledRejection', e => log.fromException(e, { fatal: 'unhandledRejection' }));
+process.on('uncaughtException', e => {
+  log.fromException(e, { fatal: 'uncaughtException' });
+  process.exit(1);                   // let Cloud Run start a clean instance
 });
 
 app.listen(PORT, '0.0.0.0', () => {

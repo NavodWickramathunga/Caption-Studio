@@ -5,7 +5,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --env-file-if-exists=.env server.js",
-    "check": "node --check server.js && node --check server/db.js && node --check server/auth.js && node --check server/ai.js && node --check server/projects.js && node --check server/plans.js && node --check script.js && node --check account.js && node --check ui.js",
+    "check": "node --check server.js && node --check server/db.js && node --check server/auth.js && node --check server/ai.js && node --check server/projects.js && node --check server/plans.js && node --check server/log.js && node --check script.js && node --check account.js && node --check oops.js && node --check ui.js",
     "build": "echo 'No build step — the browser runs the source directly'"
   },
   "dependencies": {
