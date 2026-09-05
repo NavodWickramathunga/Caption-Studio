@@ -1600,12 +1600,26 @@ function drawCaptions(ctx, W, H, t) {
   ctx.lineWidth = fontPx * 0.17;
   ctx.strokeStyle = "#000";
 
+  /* Which reads better on the highlight colour. The coefficients are the
+     usual perceptual weights — the eye takes far more brightness from
+     green than from blue, so a flat average picks wrong on yellow. */
+  const onColour = (hex) => {
+    const m = /^#?([0-9a-f]{6})$/i.exec(String(hex || "#FFD400"));
+    if (!m) return "#000000";
+    const n = parseInt(m[1], 16);
+    const lum = 0.299 * ((n >> 16) & 255) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255);
+    return lum > 150 ? "#000000" : "#FFFFFF";
+  };
+
   words.forEach((w, k) => {
     const isCurrent = (g.from + k === idx);
+    let wordX = x;
     let wordY = y;
     let wordScale = 1;
     let wordAlpha = 1;
     let shadowGlow = false;
+    let boxProg = 0;        // how far the block behind the word has grown
+    let wipeProg = -1;      // how much of the word has been filled, -1 = not wiping
 
     if (isCurrent && w.start !== null && w.end !== null) {
       const dur = Math.max(0.08, w.end - w.start);
@@ -1621,15 +1635,41 @@ function drawCaptions(ctx, W, H, t) {
         shadowGlow = true;
       } else if (S.animStyle === "slide") {
         wordY += fontPx * 0.2 * (1 - Math.min(1, prog * 2.5));
+      } else if (S.animStyle === "shake") {
+        /* Deterministic rather than random: the same frame has to look the
+           same every time it is drawn, or the preview and the exported
+           file disagree and the render flickers. */
+        const jitter = Math.sin(prog * 47) * Math.cos(prog * 31);
+        wordX += fontPx * 0.035 * jitter;
+        wordY += fontPx * 0.03 * Math.sin(prog * 39);
+      } else if (S.animStyle === "box") {
+        boxProg = Math.min(1, prog * 6);        // snaps in, does not drift in
+      } else if (S.animStyle === "wipe") {
+        wipeProg = prog;
       }
     }
 
     ctx.save();
     if (wordAlpha < 1) ctx.globalAlpha = wordAlpha;
     if (wordScale !== 1) {
-      ctx.translate(x + m.ws[k] / 2, wordY);
+      ctx.translate(wordX + m.ws[k] / 2, wordY);
       ctx.scale(wordScale, wordScale);
-      ctx.translate(-(x + m.ws[k] / 2), -wordY);
+      ctx.translate(-(wordX + m.ws[k] / 2), -wordY);
+    }
+
+    if (boxProg > 0) {
+      const padX = fontPx * 0.16, padY = fontPx * 0.42;
+      const bw = (m.ws[k] + padX * 2) * boxProg;
+      const bx = wordX + m.ws[k] / 2 - bw / 2;
+      const r = Math.min(fontPx * 0.16, bw / 2);
+      ctx.save();
+      ctx.fillStyle = S.hlColor || "#FFD400";
+      ctx.beginPath();
+      /* roundRect is not everywhere yet; fall back rather than throw. */
+      if (ctx.roundRect) ctx.roundRect(bx, wordY - padY, bw, padY * 2, r);
+      else ctx.rect(bx, wordY - padY, bw, padY * 2);
+      ctx.fill();
+      ctx.restore();
     }
 
     if (shadowGlow && isCurrent) {
@@ -1641,14 +1681,33 @@ function drawCaptions(ctx, W, H, t) {
       ctx.shadowOffsetY = fontPx * 0.06;
     }
 
-    ctx.strokeText(w.text, x, wordY);
+    /* On a filled block the outline is what makes it look cheap — the
+       block is already the contrast. */
+    if (!(boxProg > 0)) ctx.strokeText(w.text, wordX, wordY);
     ctx.shadowColor = "transparent";
     ctx.shadowBlur = 0; ctx.shadowOffsetY = 0;
 
-    ctx.fillStyle = isCurrent ? S.hlColor
-                  : (S.emphasise && w.key) ? S.keyColor
-                  : "#FFFFFF";
-    ctx.fillText(w.text, x, wordY);
+    const restColour = (S.emphasise && w.key) ? S.keyColor : "#FFFFFF";
+
+    if (wipeProg >= 0) {
+      /* The whole word in white, then the spoken part of it clipped and
+         repainted in the highlight — so the colour crosses the word as it
+         is said rather than the word changing colour all at once. */
+      ctx.fillStyle = restColour;
+      ctx.fillText(w.text, wordX, wordY);
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(wordX, wordY - fontPx, m.ws[k] * Math.min(1, wipeProg), fontPx * 2);
+      ctx.clip();
+      ctx.fillStyle = S.hlColor || "#FFD400";
+      ctx.fillText(w.text, wordX, wordY);
+      ctx.restore();
+    } else {
+      ctx.fillStyle = boxProg > 0 ? onColour(S.hlColor)
+                    : isCurrent ? S.hlColor
+                    : restColour;
+      ctx.fillText(w.text, wordX, wordY);
+    }
     ctx.restore();
 
     x += m.ws[k] + m.gap;
@@ -1874,6 +1933,11 @@ function buildASS() {
     if (S.animStyle === "pop") fx = "\\fscx0\\fscy0\\t(0,150,\\fscx100\\fscy100)";
     if (S.animStyle === "bounce") fx = "\\fscx0\\fscy0\\t(0,100,\\fscx120\\fscy120)\\t(100,200,\\fscx100\\fscy100)";
     if (S.animStyle === "fade") fx = "\\fad(200,0)";
+    /* Box, wipe and shake have no honest equivalent in a subtitle file:
+       one needs a filled shape, one needs a clip, one needs per-frame
+       jitter. Burning in with ffmpeg gets the plain highlight, which is
+       the closest true thing rather than a bad imitation. */
+    if (S.animStyle === "shake") fx = "\\fscx105\\fscy105\\t(0,120,\\fscx100\\fscy100)";
     
     L.push("Dialogue: 0," + assTime(w.start) + "," + assTime(w.end) +
            ",Karaoke,,0,0,0,,{\\pos(" + x + "," + y + ")" + fx + "}" + text);
