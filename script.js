@@ -7173,33 +7173,157 @@ function parseJsonish(raw) {
 
 const aiEngine = () => ($("aiEngine") && $("aiEngine").value) || "gemini";
 
+/* ============================================================
+   Every other writer.
+
+   ChatGPT, Grok, Perplexity, OpenRouter and most of the rest all speak the
+   same request shape, so one function covers them and the last entry lets
+   you point at anything else that does too.
+
+   The model name is a text box rather than a list on purpose: these change
+   every few months, and a hard-coded list would quietly rot into a wrong
+   one. The defaults below are a starting point to edit, not a promise.
+   ============================================================ */
+const WRITERS = {
+  gemini: { label: "Gemini" },
+  claude: { label: "Claude" },
+  openai: {
+    label: "ChatGPT", url: "https://api.openai.com/v1/chat/completions",
+    model: "gpt-4o", keyHint: "sk-…", site: "platform.openai.com"
+  },
+  grok: {
+    label: "Grok", url: "https://api.x.ai/v1/chat/completions",
+    model: "grok-2-latest", keyHint: "xai-…", site: "console.x.ai"
+  },
+  perplexity: {
+    label: "Perplexity", url: "https://api.perplexity.ai/chat/completions",
+    model: "sonar", keyHint: "pplx-…", site: "perplexity.ai/settings/api"
+  },
+  openrouter: {
+    label: "OpenRouter (has free models)", url: "https://openrouter.ai/api/v1/chat/completions",
+    model: "meta-llama/llama-3.3-70b-instruct:free", keyHint: "sk-or-…", site: "openrouter.ai/keys",
+    note: "Model names ending “:free” cost nothing. Browse them at openrouter.ai/models."
+  },
+  custom: {
+    label: "Anything else (OpenAI-compatible)", url: "", model: "",
+    keyHint: "your key", site: ""
+  }
+};
+
+function writerCfg(name) {
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem("captionStudio.writer." + name) || "{}"); }
+  catch (e) {}
+  const base = WRITERS[name] || {};
+  return { key: saved.key || "", model: saved.model || base.model || "", url: saved.url || base.url || "" };
+}
+function saveWriterCfg(name, cfg) {
+  try { localStorage.setItem("captionStudio.writer." + name, JSON.stringify(cfg)); } catch (e) {}
+}
+
+async function callOpenAiStyle(name, promptText) {
+  const cfg = writerCfg(name);
+  const label = (WRITERS[name] && WRITERS[name].label) || name;
+  if (!cfg.url) throw new Error("Give " + label + " an endpoint first.");
+  if (!cfg.key) throw new Error("Add your " + label + " key first.");
+  if (!cfg.model) throw new Error("Name the model you want " + label + " to use.");
+
+  let res;
+  try {
+    res = await fetch(cfg.url, {
+      method: "POST",
+      headers: { "content-type": "application/json", "authorization": "Bearer " + cfg.key },
+      body: JSON.stringify({
+        model: cfg.model,
+        messages: [{ role: "user", content: promptText }],
+        max_tokens: 4000
+      })
+    });
+  } catch (e) {
+    /* A blocked request and a dead network look identical from in here, and
+       the browser will not say which. The likely one is worth naming. */
+    throw new Error(label + " could not be reached from a web page. Some providers refuse " +
+                    "calls made straight from a browser; OpenRouter is the one that reliably " +
+                    "allows it. Check the key and the endpoint too.");
+  }
+
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const m = (body.error && (body.error.message || body.error)) || ("HTTP " + res.status);
+    throw new Error(label + ": " + m);
+  }
+  const text = body.choices && body.choices[0] && body.choices[0].message &&
+               body.choices[0].message.content;
+  if (!text) throw new Error(label + " sent nothing back.");
+  return text;
+}
+
 /* One door for every text job on this page. Media only ever goes to Gemini. */
 async function callWriter(promptText, mediaBlob, schema) {
-  if (aiEngine() === "claude" && !mediaBlob) {
-    const out = await callClaude(promptText +
-      "\n\nReply with JSON only — no prose around it, no code fences.");
-    return parseJsonish(out) || { };
+  const who = aiEngine();
+  /* A picture or a video is a Gemini job whatever is picked: it is the only
+     one here that has been given the media to look at. */
+  if (mediaBlob || who === "gemini") {
+    const raw = await callGeminiApi(promptText, mediaBlob || null, schema || null);
+    return parseJsonish(raw) || {};
   }
-  const raw = await callGeminiApi(promptText, mediaBlob || null, schema || null);
-  return parseJsonish(raw) || {};
+  const askJson = promptText + "\n\nReply with JSON only — no prose around it, no code fences.";
+  const out = who === "claude" ? await callClaude(askJson) : await callOpenAiStyle(who, askJson);
+  return parseJsonish(out) || {};
 }
 
 if ($("aiEngine")) {
+  /* Build the list from the table above, so adding a provider is one entry. */
+  $("aiEngine").replaceChildren();
+  Object.keys(WRITERS).forEach(k => {
+    const o = document.createElement("option");
+    o.value = k; o.textContent = WRITERS[k].label;
+    $("aiEngine").appendChild(o);
+  });
+
   const syncEngine = () => {
-    const isClaude = aiEngine() === "claude";
-    if ($("claudeKeyWrap")) $("claudeKeyWrap").style.display = isClaude ? "" : "none";
+    const who = aiEngine();
+    const isGemini = who === "gemini", isClaude = who === "claude";
+    const needsBox = !isGemini;
+    if ($("claudeKeyWrap")) $("claudeKeyWrap").style.display = needsBox ? "" : "none";
+    if ($("writerRow")) $("writerRow").style.display = (needsBox && !isClaude) ? "" : "none";
+
+    const cfg = writerCfg(who);
+    const base = WRITERS[who] || {};
+    if ($("claudeKey")) {
+      $("claudeKey").value = isClaude ? getClaudeKey() : cfg.key;
+      $("claudeKey").placeholder = isClaude ? "sk-ant-…" : (base.keyHint || "your key");
+    }
+    if ($("writerModel")) $("writerModel").value = cfg.model;
+    if ($("writerUrl")) {
+      $("writerUrl").value = cfg.url;
+      $("writerUrl").parentElement.style.display = who === "custom" ? "" : "none";
+    }
     if ($("engineNote")) {
-      $("engineNote").textContent = isClaude
-        ? "Claude writes the script, the prompt and the posts. It cannot watch a video, so " +
-          "“Upload the video” still goes to Gemini. No Claude model makes video."
-        : "Gemini writes, and is the only one that can watch an uploaded reference video.";
+      $("engineNote").textContent = isGemini
+        ? "Gemini writes, and is the only one here that can watch an uploaded reference video."
+        : (base.label || who) + " writes the scripts, prompts and posts. Only Gemini can watch " +
+          "an uploaded video, so that button still uses it. None of these make video — that is " +
+          "Veo or your own endpoint." + (base.note ? " " + base.note : "") +
+          (base.site ? " Key from " + base.site + "." : "");
     }
   };
+
+  const store = () => {
+    const who = aiEngine();
+    if (who === "gemini") return;
+    if (who === "claude") { setClaudeKey(($("claudeKey").value || "").trim()); return; }
+    saveWriterCfg(who, {
+      key: ($("claudeKey").value || "").trim(),
+      model: ($("writerModel").value || "").trim(),
+      url: (($("writerUrl") && $("writerUrl").value) || WRITERS[who].url || "").trim()
+    });
+  };
+
   $("aiEngine").addEventListener("change", syncEngine);
-  if ($("claudeKey")) {
-    $("claudeKey").value = getClaudeKey();
-    $("claudeKey").addEventListener("change", e => setClaudeKey(e.target.value.trim()));
-  }
+  ["claudeKey", "writerModel", "writerUrl"].forEach(id => {
+    if ($(id)) $(id).addEventListener("change", store);
+  });
   syncEngine();
 }
 
