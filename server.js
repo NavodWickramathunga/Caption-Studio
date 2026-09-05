@@ -18,6 +18,7 @@ const path = require('path');
 const auth = require('./server/auth');
 const aiRoutes = require('./server/ai');
 const projectRoutes = require('./server/projects');
+const kitRoutes = require('./server/kits');
 const log = require('./server/log');
 const { upsertUser, usageThisMonth } = require('./server/db');
 const { allowanceSummary } = require('./server/plans');
@@ -105,6 +106,7 @@ app.post('/api/signout', (req, res) => {
 /* ---------- everything that costs money ---------- */
 app.use('/api/ai', aiRoutes);
 app.use('/api/projects', projectRoutes);
+app.use('/api/kits', kitRoutes);
 
 /* An unknown /api path is a bug, not a page. Saying so beats handing
    back index.html and letting the caller parse HTML as JSON. */

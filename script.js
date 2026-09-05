@@ -5891,3 +5891,52 @@ async function findWatermarks() {
 
   wmSync();
 })();
+
+/* ============================================================
+   The few things a brand kit needs from in here.
+
+   kits.js drives the visible controls and lets their own listeners do
+   the work, which keeps applying a kit on the same path as changing a
+   setting by hand. But four pieces of state have no control of their
+   own to drive: the end card wording for the platforms you are not
+   currently looking at, the key colour, the two sliders, and the
+   profile picture. This is the whole of what kits.js is allowed to
+   reach in for.
+   ============================================================ */
+window.CS = window.CS || {};
+
+window.CS.allEndCards = () => {
+  stashEndCard(platform);            // fold the visible boxes back in first
+  const out = {};
+  for (const key of Object.keys(PLATFORMS)) {
+    const c = endCardFor(key);
+    out[key] = { text: c.text, handle: c.handle };
+  }
+  return out;
+};
+
+window.CS.setAllEndCards = (cards) => {
+  for (const key of Object.keys(PLATFORMS)) {
+    const c = cards && cards[key];
+    if (!c) continue;
+    END_CARDS[key] = { text: String(c.text || ''), handle: String(c.handle || '') };
+  }
+  loadEndCard(platform);             // and show whichever one is on screen
+};
+
+window.CS.currentKeyColor = () => S.keyColor;
+window.CS.currentSizePct  = () => S.sizePct;
+window.CS.currentPosPct   = () => S.posPct;
+window.CS.currentPicture  = () => S.endCardPic || null;
+window.CS.setPicture      = (dataUrl) => setEndCardPic(dataUrl, dataUrl ? 'from your kit' : null);
+
+/* The sliders and the key colour are read from S rather than from an
+   input, so putting them back means writing S and asking for a redraw. */
+window.CS.afterKitApplied = (look) => {
+  if (look) {
+    if (look.keyColor) S.keyColor = look.keyColor;
+    if (look.sizePct)  S.sizePct  = Number(look.sizePct);
+    if (look.posPct)   S.posPct   = Number(look.posPct);
+  }
+  try { renderChips(); refreshExports(); saveSessionState(); } catch (e) {}
+};

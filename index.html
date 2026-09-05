@@ -440,6 +440,17 @@
 <section class="tapzone" id="step5">
   <div class="tapbar">
     <h2><i>5</i>Save your work</h2>
+    <!-- Everything that should look the same on every video you make,
+         kept in one place so it does not have to be rebuilt each time. -->
+    <div class="kitbar" id="kitBar" hidden>
+      <label for="kitPick">Brand kit</label>
+      <select id="kitPick"><option value="">None</option></select>
+      <button id="kitApply" class="ghost">Apply</button>
+      <button id="kitSave">Save current look…</button>
+      <button id="kitUpdate" class="ghost" hidden>Update</button>
+      <button id="kitDelete" class="ghost" hidden>Delete</button>
+      <span class="kit-status" id="kitStatus"></span>
+    </div>
   </div>
   <div style="padding:0 18px 4px; display:flex; flex-direction:column; gap:12px;">
 
@@ -596,6 +607,7 @@
 
 <script src="oops.js"></script>
 <script src="account.js"></script>
+<script src="kits.js"></script>
 <script src="script.js" type="module"></script>
 <script src="ui.js"></script>
 
