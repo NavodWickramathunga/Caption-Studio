@@ -186,6 +186,12 @@
           Or copy the prompt into whatever you already use, then bring the video back in step 1.
           Nothing here is compulsory.
         </p>
+        <!-- Left blank on purpose: the model is looked up from your key. This
+             is only here for when the lookup picks the wrong one. -->
+        <div class="field" style="margin-top:9px">
+          <label for="veoModel">Video model <span style="opacity:.7">(leave blank to find it automatically)</span></label>
+          <input type="text" id="veoModel" class="txt" placeholder="found from your key">
+        </div>
         <div class="status" id="genStatus" role="status" aria-live="polite"></div>
       </div>
 

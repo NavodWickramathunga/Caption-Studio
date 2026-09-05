@@ -6962,6 +6962,52 @@ function useGeneratedVideo(blob, name) {
 }
 
 /* ---------- Veo, on the key that is already here ---------- */
+/* Which video model this key can actually reach.
+
+   A name written into the source was a guess with a shelf life, and it
+   expired: "models/veo-3.0-generate-001 is not found for API version
+   v1beta". These names change, and they differ between keys depending on
+   what an account has been given. So ask, rather than assume — which is
+   exactly what the error message says to do.
+
+   The answer is remembered so the extra call happens once, and the box
+   under the button lets a name be typed in when discovery picks wrong. */
+async function findVeoModel(base, key) {
+  const typed = ($("veoModel") && $("veoModel").value.trim()) || "";
+  if (typed) return typed.indexOf("models/") === 0 ? typed : "models/" + typed;
+
+  let cached = "";
+  try { cached = localStorage.getItem("captionStudio.veoModel") || ""; } catch (e) {}
+  if (cached) return cached;
+
+  const res = await fetch(base + "/models?key=" + encodeURIComponent(key) + "&pageSize=200");
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error("Couldn't ask Google which models your key can use: " +
+                    ((body.error && body.error.message) || ("HTTP " + res.status)));
+  }
+  const all = body.models || [];
+  /* predictLongRunning is the giveaway: it is how every video model here is
+     called, and no text model offers it. */
+  const video = all.filter(m =>
+    (m.supportedGenerationMethods || []).indexOf("predictLongRunning") >= 0);
+  const pick = video.find(m => /veo/i.test(m.name)) || video[0];
+
+  if (!pick) {
+    const names = all.map(m => String(m.name || "").replace(/^models\//, ""))
+                     .filter(n => /veo|video|imagen/i.test(n));
+    throw new Error(names.length
+      ? "Your key can see " + names.join(", ") + ", but none of them make video this way. " +
+        "Type the model name in the box below if you know it."
+      : "This Gemini key has no video model on it. Veo needs to be enabled on the Google " +
+        "account and usually needs billing. Until then, copy the prompt and make the video " +
+        "wherever you already do.");
+  }
+  try { localStorage.setItem("captionStudio.veoModel", pick.name); } catch (e) {}
+  if ($("veoModel")) $("veoModel").placeholder = pick.name.replace(/^models\//, "");
+  return pick.name;
+}
+
 async function generateWithVeo() {
   const btn = $("btnGenVeo");
   const prompt = ($("refPrompt").value || "").trim();
@@ -6976,13 +7022,20 @@ async function generateWithVeo() {
   setGenStatus("");
   try {
     const base = "https://generativelanguage.googleapis.com/v1beta";
-    const model = "models/veo-3.0-generate-001";
+    setAiClockLabel(btn, "Finding a video model");
+    const model = await findVeoModel(base, key);
     const res = await fetch(base + "/" + model + ":predictLongRunning?key=" + encodeURIComponent(key), {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ instances: [{ prompt: prompt }], parameters: { aspectRatio: "9:16" } })
     });
     const body = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error((body.error && body.error.message) || ("HTTP " + res.status));
+    if (!res.ok) {
+      /* A remembered name that has stopped working must be forgotten, or it
+         fails forever and the next press repeats the same mistake. */
+      if (res.status === 404) { try { localStorage.removeItem("captionStudio.veoModel"); } catch (e) {} }
+      throw new Error(((body.error && body.error.message) || ("HTTP " + res.status)) +
+                      (res.status === 404 ? " — forgotten, so pressing again will look it up afresh." : ""));
+    }
 
     /* Video is not made while you wait: the first reply is a ticket, and the
        work lands minutes later. */
