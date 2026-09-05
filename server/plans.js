@@ -34,7 +34,6 @@ const TEXT_COST_MICROS = 300;      // ~$0.0003 for a short script
 const PLANS = {
   free: {
     label: 'Free',
-    ads: true,
     ttsCallsPerMonth: 10,
     ttsCharsPerCall: 1500,
     ttsCharsPerMonth: 9000,
@@ -43,7 +42,6 @@ const PLANS = {
   },
   pro: {
     label: 'Pro',
-    ads: false,
     ttsCallsPerMonth: 300,
     ttsCharsPerCall: 5000,
     ttsCharsPerMonth: 400000,
@@ -101,13 +99,12 @@ function checkAllowance(user, used, kind, chars) {
   return { ok: true };
 }
 
-/* What the page needs to draw the meter and decide about ads. */
+/* What the page needs to draw the allowance meter. */
 function allowanceSummary(user, used) {
   const p = planFor(user);
   return {
     plan: (user && user.plan) || 'free',
     planLabel: p.label,
-    ads: p.ads,
     voiceovers: { used: used.ttsCalls, limit: p.ttsCallsPerMonth },
     characters: { used: used.ttsChars, limit: p.ttsCharsPerMonth },
     scripts: { used: used.textCalls, limit: p.textCallsPerMonth },

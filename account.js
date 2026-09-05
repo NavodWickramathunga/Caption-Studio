@@ -161,7 +161,6 @@ function csRender() {
 
   if (mode === "key") {
     box.innerHTML = `<span class="acct-note">Using your own Gemini key</span>`;
-    csAds(false);
     return;
   }
 
@@ -169,10 +168,6 @@ function csRender() {
     box.innerHTML = signInReady
       ? `<span class="acct-note">Sign in to make voiceovers</span><span id="gsiButton"></span>`
       : `<span class="acct-note">Sign-in is not configured on this server</span>`;
-    /* A visitor who has not signed in is still a visitor, and advertising is
-       currently the only thing paying for any of this — so the slot runs for
-       them too. It stops only for a plan that has bought its way out of it. */
-    csAds(true);
     /* renderButton needs the element to exist, so it runs after this. */
     if (signInReady && window.google && google.accounts && google.accounts.id) {
       google.accounts.id.renderButton(document.getElementById("gsiButton"),
@@ -202,26 +197,11 @@ function csRender() {
     <div class="acct-status" id="acctStatus"></div>`;
   const out = document.getElementById("acctOut");
   if (out) out.addEventListener("click", csSignOut);
-
-  csAds(!!a.ads);
 }
 
 function csEsc(s) {
   return String(s).replace(/[&<>"']/g, c =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-}
-
-/* ---------- ads ----------
-   Shown to the free plan and to nobody else, which is the whole reason
-   to upgrade. The slot and the switching are built; the AdSense snippet
-   is not pasted in, because the account has to be approved first and a
-   script that renders nothing is worse than an empty box that says why.
-   When approval lands, put the <ins class="adsbygoogle"> block inside
-   #adSlot and call adsbygoogle.push({}) from csAds. */
-function csAds(show) {
-  const rail = document.getElementById("adRail");
-  if (!rail) return;
-  rail.hidden = !show;
 }
 
 document.addEventListener("DOMContentLoaded", csInit);

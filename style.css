@@ -122,18 +122,6 @@ body::before{
 .kit-status.bad{color:var(--rose)}
 .kit-status.ok{color:var(--vein)}
 
-/* ---------- ads ---------- */
-/* Free plan only. Paying removes it, which is most of why anyone pays. */
-/* display on the element beats the browser's [hidden] rule, so the hidden
-   state has to be the one that wins here rather than the one that loses. */
-.ad-rail{display:none}
-.ad-rail:not([hidden]){display:flex;justify-content:center;padding:10px 30px 0}
-.ad-slot{width:100%;max-width:728px;min-height:90px;display:grid;place-items:center;
-  border:1px dashed var(--line);border-radius:9px;background:var(--panel);
-  font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;
-  color:var(--ivory-faint)}
-@media (max-width:720px){ .ad-rail{padding:8px 16px 0} .ad-slot{min-height:60px} }
-
 /* ---------- step rail ---------- */
 .steprail{
   display:flex;gap:4px;padding:0 30px 9px;
