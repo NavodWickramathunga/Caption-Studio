@@ -1791,11 +1791,22 @@ const PLATFORMS = {
   }
 };
 
+/* The sticker's look per platform. It lives up here with PLATFORMS rather
+   than beside the drawing code because applyPlatform() runs during start-up,
+   before that part of the file has been reached — a const declared further
+   down is still in its dead zone at that moment, and reading it throws. */
+const CTA_STYLE = {
+  facebook: { text: "Follow the page", bg: "#1877F2", fg: "#FFFFFF", icon: "thumb" },
+  youtube:  { text: "Subscribe",       bg: "#FF0033", fg: "#FFFFFF", icon: "play"  },
+  tiktok:   { text: "Follow",          bg: "#FE2C55", fg: "#FFFFFF", icon: "plus"  }
+};
+
 let platform = "facebook";
 try { platform = localStorage.getItem("captionStudio.platform") || "facebook"; } catch (e) {}
 if (!PLATFORMS[platform]) platform = "facebook";
 
 const plat = () => PLATFORMS[platform];
+const ctaStyle = () => CTA_STYLE[platform] || CTA_STYLE.facebook;
 Object.defineProperty(window, "SAFE_DEBUG", { get: () => plat().safe, configurable: true });
 
 /* Kept as a name because the drawing code reads it every frame. */
@@ -1866,6 +1877,7 @@ function frameLoop() {
       }
     }
     drawCaptions(octx, W, H, nowTime());
+    drawCta(octx, W, H, nowTime());
     $("tNow").textContent = fmtClock(nowTime());
     if (!scrubbing) paintScrub();
   }
@@ -2075,6 +2087,8 @@ function applyPlatform(key) {
   if ($("safeWho")) $("safeWho").textContent = plat().label;
   updatePlatformNote();
   updateSafeZoneWarning();
+  // the sticker follows the platform's colour, wording and bell
+  if (typeof syncCtaText === "function") syncCtaText(true);
 }
 
 function possessive(name) {
@@ -2545,6 +2559,7 @@ async function renderMp4() {
         rctx.fillStyle = "#000"; rctx.fillRect(0, 0, W, H);
       }
       drawCaptions(rctx, W, H, t);
+      drawCta(rctx, W, H, t);
     } else {
       // hold the final frame and fade the call to action over it
       const last = S.clips[S.clips.length - 1];
@@ -2850,6 +2865,7 @@ async function burnIn() {
     if (!clipDone) {
       drawClipFitted(rctx, video, W, H);
       drawCaptions(rctx, W, H, t);
+      drawCta(rctx, W, H, t);
       say("Recording… " + Math.min(100, Math.round(t / dur * 100)) + "%");
     } else if (cardSecs > 0) {
       // Hold the last frame and fade the call to action over it.
@@ -3696,6 +3712,59 @@ if ($("endCardSecs")) {
   $("endCardSecs").addEventListener("input", sync);
   sync();
 }
+
+/* ---- the follow / subscribe sticker ---- */
+function syncCtaLabels() {
+  if (!$("ctaAt")) return;
+  /* The slider has to reach the end of the video or the sticker cannot be
+     put where it is wanted. Re-read the length rather than assuming 60s. */
+  const len = videoLength();
+  if (len > 1) $("ctaAt").max = Math.max(1, Math.round(len - 0.5));
+  $("ctaAtVal").textContent = parseFloat($("ctaAt").value).toFixed(1) + "s";
+  $("ctaSecsVal").textContent = parseFloat($("ctaSecs").value).toFixed(1) + "s";
+
+  const c = ctaSettings();
+  const who = $("ctaWho");
+  if (who) {
+    if (!c) { who.textContent = ""; }
+    else if (len > 1 && c.at >= len) {
+      who.textContent = `That's past the end of the ${len.toFixed(1)}s video — the sticker would never show.`;
+      who.style.color = "#e0b341";
+    } else {
+      const ends = c.at + c.dur;
+      who.textContent = `“${c.text}” slides in at ${c.at.toFixed(1)}s and leaves at ${ends.toFixed(1)}s, ` +
+        `clear of where ${plat().label} puts its own buttons. It's drawn into the video, ` +
+        `so it's there in the MP4 too.` +
+        (len > 1 && ends > len ? ` The video ends first, at ${len.toFixed(1)}s.` : "");
+      who.style.color = "";
+    }
+  }
+}
+
+/* The wording follows the platform until it is typed over, because
+   "Subscribe" on a Facebook reel is the wrong ask. */
+function syncCtaText(force) {
+  const el = $("ctaText");
+  if (!el) return;
+  const known = Object.keys(CTA_STYLE).map(k => CTA_STYLE[k].text);
+  if (force || !el.value.trim() || known.includes(el.value.trim())) el.value = ctaStyle().text;
+  // A bell belongs to YouTube; elsewhere it is just noise on the pill.
+  if ($("ctaBell") && force) $("ctaBell").checked = platform === "youtube";
+  syncCtaLabels();
+}
+
+if ($("ctaOn")) {
+  $("ctaOn").addEventListener("change", e => {
+    $("ctaRow").style.display = e.target.checked ? "flex" : "none";
+    if (e.target.checked) syncCtaText(!$("ctaText").value.trim());
+    syncCtaLabels();
+  });
+  ["ctaAt", "ctaSecs", "ctaText", "ctaPos", "ctaBell"].forEach(id => {
+    if ($(id)) $(id).addEventListener("input", syncCtaLabels);
+    if ($(id)) $(id).addEventListener("change", syncCtaLabels);
+  });
+  syncCtaText(true);
+}
 // moving the caption changes whether it clears Facebook's interface
 ["pos", "size", "wps"].forEach(id => {
   if ($(id)) $(id).addEventListener("input", updateSafeZoneWarning);
@@ -3981,6 +4050,267 @@ async function testVoiceCapture() {
   }
 }
 if ($("btnTestSound")) $("btnTestSound").addEventListener("click", testVoiceCapture);
+
+/* ============================================================
+   The follow / subscribe sticker.
+
+   The end card asks after the video has finished, which is after most
+   people have already swiped on. This asks in the middle of the clip,
+   while they are still watching, then leaves.
+
+   Everything is drawn with canvas paths — no image files, no fonts to
+   load. A sticker that depends on a download is a sticker that renders
+   as a blank rectangle in the export when the download is slow, and the
+   export has no way to wait.
+   ============================================================ */
+function ctaSettings() {
+  const on = $("ctaOn");
+  if (!on || !on.checked) return null;
+  const st = ctaStyle();
+  return {
+    text: (($("ctaText") && $("ctaText").value) || st.text).trim() || st.text,
+    at: Math.max(0, parseFloat($("ctaAt") && $("ctaAt").value) || 0),
+    dur: Math.max(1.5, parseFloat($("ctaSecs") && $("ctaSecs").value) || 3),
+    pos: ($("ctaPos") && $("ctaPos").value) || "bottom",
+    bell: !!($("ctaBell") && $("ctaBell").checked),
+    bg: st.bg, fg: st.fg, icon: st.icon
+  };
+}
+
+/* 0 at the edges, 1 in the middle, with no corner on it — the difference
+   between a sticker that arrives and one that is suddenly just there. */
+const smooth = x => { const c = Math.max(0, Math.min(1, x)); return c * c * (3 - 2 * c); };
+
+function roundRectPath(ctx, x, y, w, h, r) {
+  const rr = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  if (ctx.roundRect) { ctx.roundRect(x, y, w, h, rr); return; }
+  ctx.moveTo(x + rr, y);
+  ctx.arcTo(x + w, y, x + w, y + h, rr);
+  ctx.arcTo(x + w, y + h, x, y + h, rr);
+  ctx.arcTo(x, y + h, x, y, rr);
+  ctx.arcTo(x, y, x + w, y, rr);
+  ctx.closePath();
+}
+
+/* The little glyph on the left of the pill, and the part that actually sells
+   it. A pill that slides in and then holds still reads as a graphic; an icon
+   that keeps performing its own gesture reads as a button being pressed.
+
+   Each icon does the thing it stands for, on a repeating beat: the thumb is
+   pressed and springs back, the play triangle takes a step and settles, the
+   plus turns as it lands. The beat is deliberately longer than the movement,
+   so there is a rest between gestures — a glyph that never stops moving is
+   the one people find annoying rather than persuasive.
+
+   `age` is seconds since the sticker appeared. Everything is derived from
+   it, so the same frame always draws the same way and the preview and the
+   export cannot disagree. */
+const CTA_BEAT = 1.5;                       // one gesture, then a rest
+
+function drawCtaIcon(ctx, kind, s, colour, age) {
+  const ph = ((age % CTA_BEAT) + CTA_BEAT) % CTA_BEAT / CTA_BEAT;   // 0..1
+  /* One push over the first third of the beat: out fast, back with a small
+     overshoot, still for the rest. */
+  const gesture = ph < 0.34 ? Math.sin((ph / 0.34) * Math.PI) : 0;
+  const settle = ph < 0.34 ? 0 : Math.max(0, Math.sin((ph - 0.34) * 9) * Math.exp(-(ph - 0.34) * 7));
+
+  ctx.save();
+  ctx.fillStyle = colour;
+  ctx.strokeStyle = colour;
+  ctx.lineWidth = s * 0.16;
+  ctx.lineCap = "round";
+
+  if (kind === "play") {
+    /* Nudges forward and grows, like it is being pressed towards the video,
+       then rocks back into place. */
+    const k = 1 + gesture * 0.22 - settle * 0.05;
+    ctx.translate(gesture * s * 0.07, 0);
+    ctx.scale(k, k);
+    ctx.beginPath();
+    ctx.moveTo(-s * 0.28, -s * 0.42); ctx.lineTo(s * 0.44, 0); ctx.lineTo(-s * 0.28, s * 0.42);
+    ctx.closePath(); ctx.fill();
+  } else if (kind === "plus") {
+    // a quarter turn on the push, unwinding as it settles
+    ctx.rotate(gesture * Math.PI * 0.5 + settle * 0.12);
+    const k = 1 + gesture * 0.15;
+    ctx.scale(k, k);
+    ctx.beginPath();
+    ctx.moveTo(-s * 0.42, 0); ctx.lineTo(s * 0.42, 0);
+    ctx.moveTo(0, -s * 0.42); ctx.lineTo(0, s * 0.42);
+    ctx.stroke();
+  } else {
+    /* The thumb presses: it tips down onto the button, dips slightly, and
+       springs back up. Pivoting at the wrist rather than the middle is what
+       makes it a press instead of a wobble. */
+    const press = gesture;
+    ctx.save();
+    ctx.translate(-s * 0.3, s * 0.5);                 // wrist
+    ctx.rotate(-press * 0.42 + settle * 0.1);
+    ctx.translate(s * 0.3, -s * 0.5);
+    ctx.translate(0, press * s * 0.06);
+    const k = 1 + press * 0.08;
+    ctx.scale(k, k);
+    ctx.beginPath();                                   // fist
+    ctx.moveTo(-s * 0.45, s * 0.12);
+    ctx.lineTo(-s * 0.16, s * 0.12);
+    ctx.lineTo(-s * 0.16, s * 0.5);
+    ctx.lineTo(-s * 0.45, s * 0.5);
+    ctx.closePath(); ctx.fill();
+    ctx.beginPath();                                   // thumb
+    ctx.moveTo(-s * 0.05, s * 0.5);
+    ctx.lineTo(-s * 0.05, -s * 0.02);
+    ctx.lineTo(s * 0.16, -s * 0.5);
+    ctx.quadraticCurveTo(s * 0.36, -s * 0.5, s * 0.28, -s * 0.14);
+    ctx.lineTo(s * 0.5, -s * 0.14);
+    ctx.quadraticCurveTo(s * 0.6, s * 0.02, s * 0.42, s * 0.5);
+    ctx.closePath(); ctx.fill();
+    ctx.restore();
+  }
+
+  /* A ring flicks outward at the moment of the press — the touch ripple
+     every phone draws, which is what makes it read as a tap rather than a
+     twitch. It fades as it grows, so it never becomes a hard circle.
+
+     It stops at 0.85 of the icon: the pill is only about twice the icon
+     tall, so a wider ring escapes the button it is supposed to belong to
+     and starts crowding the first letter of the word. */
+  const rip = ph < 0.45 ? ph / 0.45 : -1;
+  if (rip >= 0 && rip <= 1) {
+    ctx.globalAlpha = 0.45 * (1 - rip);
+    ctx.lineWidth = s * 0.08 * (1 - rip * 0.6);
+    ctx.beginPath();
+    ctx.arc(0, 0, s * (0.42 + rip * 0.43), 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+/* A bell that actually rings: it swings, and the clapper trails the swing
+   rather than moving with it, which is what reads as sound. */
+function drawBell(ctx, s, colour, swing) {
+  ctx.save();
+  ctx.translate(0, -s * 0.45);
+  ctx.rotate(swing);
+  ctx.translate(0, s * 0.45);
+  ctx.fillStyle = colour;
+  ctx.beginPath();
+  ctx.moveTo(-s * 0.42, s * 0.24);
+  ctx.quadraticCurveTo(-s * 0.34, s * 0.24, -s * 0.32, -s * 0.02);
+  ctx.quadraticCurveTo(-s * 0.29, -s * 0.44, 0, -s * 0.48);
+  ctx.quadraticCurveTo(s * 0.29, -s * 0.44, s * 0.32, -s * 0.02);
+  ctx.quadraticCurveTo(s * 0.34, s * 0.24, s * 0.42, s * 0.24);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+  // clapper, lagging behind the swing
+  ctx.save();
+  ctx.translate(Math.sin(swing * 1.7) * s * 0.1, s * 0.34);
+  ctx.fillStyle = colour;
+  ctx.beginPath();
+  ctx.arc(0, 0, s * 0.1, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawCta(ctx, W, H, t) {
+  const c = ctaSettings();
+  if (!c || !W || !H) return;
+  const p = (t - c.at) / c.dur;
+  if (p < 0 || p > 1) return;
+
+  /* In fast, hold, out fast. The hold is where the pulse and the bell live,
+     so they do not fight the arrival. */
+  const IN = 0.16, OUT = 0.84;
+  const appear = smooth(p / IN);
+  const leave = 1 - smooth((p - OUT) / (1 - OUT));
+  const alpha = Math.min(appear, leave);
+  const held = Math.min(appear, leave) >= 0.999;
+  const age = t - c.at;
+
+  const padY = H * 0.014;
+  const face = fontFor(c.text);
+  let fontPx = H * 0.030;
+  ctx.save();
+  ctx.font = "600 " + fontPx + "px " + face;
+  const textW = ctx.measureText(c.text).width;
+  const iconS = fontPx * 1.15;
+  const bellS = c.bell ? fontPx * 1.1 : 0;
+  const gap = fontPx * 0.5;
+  const padX = fontPx * 0.72;
+  const pillW = padX * 2 + iconS + gap + textW + (c.bell ? gap + bellS : 0);
+  const pillH = fontPx + padY * 2 + fontPx * 0.35;
+
+  /* Clear of the strip each platform covers with its own buttons, so the
+     sticker is not asking for a follow from underneath a share icon. */
+  const cx = W / 2;
+  const cy = c.pos === "top"
+    ? H * SAFE.top + pillH * 0.9
+    : H * (1 - SAFE.bottom) - pillH * 0.9;
+
+  const rise = (1 - appear) * H * 0.05 * (c.pos === "top" ? -1 : 1);
+  const pulse = held ? 1 + 0.025 * Math.sin(age * 7.5) : 1;
+
+  ctx.globalAlpha = alpha;
+  ctx.translate(cx, cy + rise);
+  ctx.scale(pulse, pulse);
+
+  // a shadow, so it sits on the video rather than in it
+  ctx.shadowColor = "rgba(0,0,0,0.45)";
+  ctx.shadowBlur = H * 0.012;
+  ctx.shadowOffsetY = H * 0.003;
+  ctx.fillStyle = c.bg;
+  roundRectPath(ctx, -pillW / 2, -pillH / 2, pillW, pillH, pillH / 2);
+  ctx.fill();
+  ctx.shadowColor = "transparent";
+  ctx.shadowBlur = 0;
+  ctx.shadowOffsetY = 0;
+
+  /* One shine sweep across the pill just after it lands. Clipped to the
+     pill, or it paints a diagonal bar across the video. */
+  const shine = (p - 0.22) / 0.22;
+  if (shine > 0 && shine < 1) {
+    ctx.save();
+    roundRectPath(ctx, -pillW / 2, -pillH / 2, pillW, pillH, pillH / 2);
+    ctx.clip();
+    const sx = -pillW / 2 + shine * pillW * 1.6 - pillW * 0.3;
+    const grad = ctx.createLinearGradient(sx - pillW * 0.18, 0, sx + pillW * 0.18, 0);
+    grad.addColorStop(0, "rgba(255,255,255,0)");
+    grad.addColorStop(0.5, "rgba(255,255,255,0.35)");
+    grad.addColorStop(1, "rgba(255,255,255,0)");
+    ctx.fillStyle = grad;
+    ctx.fillRect(-pillW / 2, -pillH / 2, pillW, pillH);
+    ctx.restore();
+  }
+
+  let x = -pillW / 2 + padX;
+  ctx.save();
+  ctx.translate(x + iconS / 2, 0);
+  drawCtaIcon(ctx, c.icon, iconS, c.fg, age);
+  ctx.restore();
+  x += iconS + gap;
+
+  ctx.fillStyle = c.fg;
+  ctx.textAlign = "left";
+  ctx.textBaseline = "middle";
+  ctx.font = "600 " + fontPx + "px " + face;
+  ctx.fillText(c.text, x, fontPx * 0.04);
+  x += textW + gap;
+
+  if (c.bell) {
+    /* Rings on the same beat as the icon's gesture, so the two read as one
+       movement rather than two things twitching independently. It rings for
+       the first third and hangs still for the rest — a bell that never stops
+       is the thing people complain about. */
+    const bph = ((age % CTA_BEAT) + CTA_BEAT) % CTA_BEAT / CTA_BEAT;
+    const swing = bph < 0.34 ? Math.sin(bph * 52) * 0.38 * (1 - bph / 0.34) : 0;
+    ctx.save();
+    ctx.translate(x + bellS / 2, 0);
+    drawBell(ctx, bellS, c.fg, swing);
+    ctx.restore();
+  }
+  ctx.restore();
+}
 
 /* ============================================================
    The end card: one second that asks for the follow.

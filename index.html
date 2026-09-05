@@ -471,6 +471,7 @@
     <div style="display:flex; gap:16px; flex-wrap:wrap; align-items:center;">
       <label class="chk"><input type="checkbox" id="showSafe"> Show where <span id="safeWho">Facebook</span>'s buttons cover the frame</label>
       <label class="chk"><input type="checkbox" id="endCardOn"> Add a “follow me” end card</label>
+      <label class="chk"><input type="checkbox" id="ctaOn"> Pop up a follow / subscribe sticker</label>
     </div>
 
     <p class="hint" id="safeWarn" style="display:none;margin:0;padding:8px 10px;border-radius:7px;
@@ -505,6 +506,36 @@
       </div>
     </div>
     <p class="hint" id="endCardWho" style="margin:6px 0 0;font-size:11.5px"></p>
+
+    <!-- The end card asks for the follow after the video is over, which is
+         the moment most people have already swiped. This asks mid-clip,
+         while they are still watching, and gets out of the way again. -->
+    <div id="ctaRow" style="display:none; gap:10px; flex-wrap:wrap; align-items:flex-end;">
+      <div class="field" style="flex:1; min-width:150px;">
+        <label for="ctaText">Sticker says</label>
+        <input type="text" id="ctaText" maxlength="22"
+               style="width:100%;font:inherit;font-size:13px;background:var(--panel-2);color:var(--ivory);
+                      border:1px solid var(--line);border-radius:8px;padding:8px 10px">
+      </div>
+      <div class="field" style="width:130px;">
+        <label for="ctaAt">Pops up at <b id="ctaAtVal">0.0s</b></label>
+        <input type="range" id="ctaAt" min="0" max="60" step="0.5" value="3">
+      </div>
+      <div class="field" style="width:120px;">
+        <label for="ctaSecs">On screen <b id="ctaSecsVal">3.0s</b></label>
+        <input type="range" id="ctaSecs" min="1.5" max="8" step="0.5" value="3">
+      </div>
+      <div class="field" style="width:130px;">
+        <label for="ctaPos">Sits at the</label>
+        <select id="ctaPos" style="width:100%;font:inherit;font-size:13px;background:var(--panel-2);
+                color:var(--ivory);border:1px solid var(--line);border-radius:8px;padding:8px 10px">
+          <option value="top">Top</option>
+          <option value="bottom" selected>Bottom</option>
+        </select>
+      </div>
+      <label class="chk" style="align-self:center"><input type="checkbox" id="ctaBell" checked> Ringing bell</label>
+    </div>
+    <p class="hint" id="ctaWho" style="margin:6px 0 0;font-size:11.5px"></p>
 
     <div id="coachNotes" style="display:none;flex-direction:column;gap:6px;font-size:12.5px;
          color:var(--ivory-dim);background:var(--panel-2);border:1px solid var(--line);
