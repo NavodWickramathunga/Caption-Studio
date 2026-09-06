@@ -6924,6 +6924,13 @@ async function studyReference() {
   /* How long one clip can be depends on the model, and that is not
      something to guess on the user's behalf — it is set in the panel. */
   const clipMax = parseInt(($("clipMax") && $("clipMax").value) || "10", 10) || 10;
+  const clipCount = parseInt(($("clipCount") && $("clipCount").value) || "3", 10) || 3;
+  const totalSecs = clipMax * clipCount;
+  /* Roughly two and a half words a second is a comfortable read for
+     short-form. Writing the script to the length of the footage is what
+     stops the voice running out before the pictures do, or the other way
+     round — which was previously left to luck. */
+  const wordBudget = Math.round(totalSecs * 2.5);
   /* A link on its own tells a text model nothing — it cannot open one. Say
      that in the prompt rather than letting it pretend it watched. */
   const seen = refState.mode === "file"
@@ -6941,13 +6948,15 @@ async function studyReference() {
       "Return three things.\n" +
       "\"why\": two or three sentences on what makes the reference hold attention — the hook, " +
       "the pacing, the shot types, how the captions behave.\n" +
-      "\"script\": a spoken script for a 20-30 second vertical video on the user's subject, " +
-      "built in the same shape. Spoken words only, no stage directions, no markdown." + inLang + "\n" +
-      "\"shots\": enough shots to cover the whole script, in order, none longer than " +
-      clipMax + " seconds — that is the longest single clip this user's video model will make. " +
-      "Prefer a cut every 4 to 8 seconds even when longer is allowed: a held shot loses people, " +
-      "and the cuts are half of why a reel keeps them. " +
-      "Each has \"line\" (the words from the script spoken over it), \"seconds\" (at most " +
+      "\"script\": a spoken script for a " + totalSecs + " second vertical video on the user's " +
+      "subject, built in the same shape as the reference — about " + wordBudget + " words, " +
+      "because that is what fits " + totalSecs + " seconds at a natural short-form pace. " +
+      "Do not overrun it. Spoken words only, no stage directions, no markdown." + inLang + "\n" +
+      "\"shots\": exactly " + clipCount + " shots covering the whole script in order, each one " +
+      "a separate clip of up to " + clipMax + " seconds — the user is making " + clipCount +
+      " clips of " + clipMax + " seconds and joining them, so there must be " + clipCount +
+      " prompts, no more and no fewer, and the script must divide evenly across them. " +
+      "Each has \"line\" (the words from the script spoken over that clip), \"seconds\" (at most " +
       clipMax + "), and " +
       "\"prompt\" (for a text-to-video model).\n" + SHOT_BRIEF + "\n" +
       "\"prompt\": the shot 1 prompt again, on its own, for anyone who wants a single clip.\n\n" +
@@ -7608,3 +7617,20 @@ function renderShots(shots) {
   });
   box.appendChild(all);
 }
+
+/* Say the plan back, because "3 clips" and "10 seconds" are two numbers and
+   the thing that matters is what they multiply to. */
+function syncClipPlan() {
+  const el = $("clipPlan");
+  if (!el) return;
+  const n = parseInt(($("clipCount") && $("clipCount").value) || "3", 10) || 3;
+  const s = parseInt(($("clipMax") && $("clipMax").value) || "10", 10) || 10;
+  const total = n * s;
+  el.textContent = n + " × " + s + "s = a " + total + " second video, and " + n +
+    (n === 1 ? " prompt" : " prompts") + " to make it with. The script is written to fit " +
+    total + " seconds (about " + Math.round(total * 2.5) + " words).";
+}
+["clipCount", "clipMax"].forEach(id => {
+  if ($(id)) $(id).addEventListener("change", syncClipPlan);
+});
+syncClipPlan();

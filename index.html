@@ -157,11 +157,23 @@
           </select>
         </div>
       </div>
+      <!-- Say what you are going to make, and the script and the shot list are
+           written to fit it — rather than a script of some length and a shot
+           list that has to be squeezed into it afterwards. -->
       <div class="grid2" style="margin-top:10px">
-        <!-- Depends on the model, so it is asked rather than assumed. The
-             shot list is planned to fit whatever is picked here. -->
         <div class="field">
-          <label for="clipMax">Longest clip your video model makes</label>
+          <label for="clipCount">How many clips</label>
+          <select id="clipCount">
+            <option value="1">1 clip</option>
+            <option value="2">2 clips</option>
+            <option value="3" selected>3 clips</option>
+            <option value="4">4 clips</option>
+            <option value="5">5 clips</option>
+            <option value="6">6 clips</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="clipMax">Each one</label>
           <select id="clipMax">
             <option value="8">8 seconds</option>
             <option value="10" selected>10 seconds</option>
@@ -169,6 +181,7 @@
           </select>
         </div>
       </div>
+      <p class="hint" id="clipPlan" style="margin:7px 0 0;font-size:11.5px"></p>
 
       <div class="vo-actions">
         <button id="btnStudy" class="primary">🔍 Study it and write my script</button>
