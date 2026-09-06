@@ -24,7 +24,8 @@
   <a href="#pstep2" data-step="pstep2"><i>2</i><span>Headline</span></a>
   <a href="#pstep3" data-step="pstep3"><i>3</i><span>Picture</span></a>
   <a href="#pstep4" data-step="pstep4"><i>4</i><span>Layout</span></a>
-  <a href="#pstep5" data-step="pstep5"><i>5</i><span>Export</span></a>
+  <a href="#pstep5" data-step="pstep5"><i>5</i><span>Size</span></a>
+  <a href="#pstep6" data-step="pstep6"><i>6</i><span>Reel</span></a>
 </nav>
 </div>
 
@@ -169,6 +170,55 @@
       <div class="seg" id="pcSizes" role="tablist"></div>
     </section>
 
+    <!-- The same story, pointed at the thing this studio is actually for.
+         A post is one picture; a reel is that story spoken over footage with
+         the words timed to it — and the tool next door already does the hard
+         half of that. So this step writes the script and hands it over,
+         rather than growing a second captions engine over here. -->
+    <section class="step" id="pstep6">
+      <h2><i>6</i>Turn it into a Reel <span class="optional">or a YouTube Short</span></h2>
+      <p class="hint">Writes the spoken script from the same story, opening on the headline you
+        picked. Caption Studio then speaks it, times every word against that recording and
+        burns the captions over your footage.</p>
+
+      <div class="grid2">
+        <div class="field">
+          <label for="pcReelLength">How long</label>
+          <select id="pcReelLength">
+            <option value="15">15 seconds — a single point</option>
+            <option value="30" selected>30 seconds — the usual reel</option>
+            <option value="45">45 seconds — room for detail</option>
+            <option value="60">60 seconds — the Shorts ceiling</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="pcReelTone">How it should land</label>
+          <select id="pcReelTone">
+            <option value="news">Straight — a reporter reading it out</option>
+            <option value="hook">Argued — take a side and defend it</option>
+            <option value="explain">Explained — what it means for you</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="vo-actions">
+        <button id="pcWriteReel" class="primary">Write the reel script</button>
+      </div>
+
+      <textarea id="pcReelScript" style="min-height:150px;margin-top:10px"
+                placeholder="The spoken script lands here. Edit it freely — what is in this box is what gets said."></textarea>
+      <div class="status" id="pcReelCount"></div>
+
+      <div class="vo-actions">
+        <button id="pcToStudio" class="primary">Open in Caption Studio →</button>
+      </div>
+      <p class="hint" style="margin-top:10px">
+        It carries over the script, the narrator you chose, and the photo as the end card.
+        Your footage stays where it is — add it in step 1 over there, the way you already do.
+      </p>
+      <div class="status" id="pcReelStatus"></div>
+    </section>
+
   </div>
 </main>
 </div>
@@ -201,4 +251,5 @@
 
 <script src="oops.js"></script>
 <script src="account.js"></script>
+<script src="handoff.js"></script>
 <script src="post.js"></script>

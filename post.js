@@ -841,6 +841,141 @@ function buildSizes() {
 }
 
 /* ============================================================
+   Step 6 — the same story, as a reel
+
+   Caption Studio already writes a reel script from a one-line topic. What
+   it has never had is the story itself: a topic is a guess at what the
+   video is about, and by this point the page is holding the actual text
+   and the angle that was chosen out of four. That is a far better brief,
+   and it is the whole reason this step lives here rather than there.
+
+   What this step does not do is caption anything. The timing engine,
+   the word-by-word highlight and the MP4 burn-in are all next door and
+   all work; a second copy of them over here would be a second copy to
+   keep right.
+   ============================================================ */
+
+const TONES = {
+  news:    "Read it the way a news reporter would — flat, factual, no opinion offered.",
+  hook:    "Take a clear side on it and argue that side. Say the arguable thing out loud.",
+  explain: "Explain what it actually means for the person watching, in their own terms."
+};
+
+/* Roughly 150 words a minute out loud, which is where a read script that
+   was written to 30 seconds usually lands. */
+const WORDS_PER_SECOND = 2.5;
+
+function reelPrompt(story, headline, seconds, tone, audience) {
+  const words = Math.round(seconds * WORDS_PER_SECOND);
+  return `Write the spoken script for a vertical short video — Instagram Reels and YouTube Shorts.
+
+THE STORY:
+${story}
+
+THE ANGLE THAT WAS CHOSEN:
+${headline}
+
+AUDIENCE: ${audience}
+
+${TONES[tone] || TONES.news}
+
+RULES
+- Write in the same language as the story above. Do not translate it.
+- About ${words} words. It is read aloud at roughly ${WORDS_PER_SECOND} words a second and
+  it must come in under ${seconds} seconds.
+- The first sentence is the hook and it is the angle above, said plainly. Nobody
+  watches past a slow opening.
+- Short spoken sentences. It is going to be read out, not read off a page.
+- End on the thing that makes someone comment — a question, or the line worth arguing with.
+- Return ONLY the words that get spoken. No headings, no scene directions, no
+  camera notes, no speaker labels, no markdown, no emoji, no hashtags.`;
+}
+
+function countWords(s) {
+  return (String(s || "").trim().match(/\S+/g) || []).length;
+}
+
+/* The script box says how long it will take to say, because "30 seconds"
+   is the one thing about a reel that is not negotiable and the number is
+   otherwise only discovered after the voice has been made and paid for. */
+function updateReelCount() {
+  const n = countWords($("pcReelScript").value);
+  if (!n) { status("pcReelCount", ""); return; }
+  const secs = n / WORDS_PER_SECOND;
+  const target = parseInt($("pcReelLength").value, 10);
+  const over = secs > target + 3;
+  status("pcReelCount",
+    `${n} words — about ${secs.toFixed(0)} seconds spoken.` +
+    (over ? ` That is longer than the ${target} you asked for. Trim it, or pick a longer one.` : ""),
+    over ? "warn" : "ok");
+}
+
+$("pcReelScript").addEventListener("input", updateReelCount);
+$("pcReelLength").addEventListener("change", updateReelCount);
+
+$("pcWriteReel").addEventListener("click", async e => {
+  const story = $("pcStory").value.trim();
+  const headline = $("pcHeadline").value.replace(/\*/g, "").trim();
+  if (!story && !headline) {
+    status("pcReelStatus", "Paste the story in step 1 first — the script is written from it.", "warn");
+    return;
+  }
+  status("pcReelStatus", "");
+  try {
+    await busy(e.target, "Writing…", async () => {
+      const text = await ai(reelPrompt(
+        story || headline,
+        headline || "(no headline picked — open on the strongest line in the story)",
+        parseInt($("pcReelLength").value, 10),
+        $("pcReelTone").value,
+        $("pcAudience").value.trim() || "General readers."));
+      $("pcReelScript").value = text.replace(/^["']|["']$/g, "").trim();
+      updateReelCount();
+      status("pcReelStatus", "Read it through, then send it next door.", "ok");
+    });
+  } catch (err) {
+    status("pcReelStatus", err.message, "warn");
+  }
+});
+
+/* The end card picture is a circle a tenth of the frame high over there, so
+   what crosses is a 320px thumbnail rather than the full photograph. The
+   big one would not fit in storage and would be thrown away on arrival. */
+function endCardThumb() {
+  if (!S.image) return null;
+  const SIDE = 320;
+  const side = Math.min(S.image.width, S.image.height);
+  const c = document.createElement("canvas");
+  c.width = c.height = SIDE;
+  c.getContext("2d").drawImage(
+    S.image, (S.image.width - side) / 2, (S.image.height - side) / 2,
+    side, side, 0, 0, SIDE, SIDE);
+  try { return c.toDataURL("image/jpeg", 0.86); } catch (e) { return null; }
+}
+
+$("pcToStudio").addEventListener("click", () => {
+  const script = $("pcReelScript").value.trim();
+  if (!script) {
+    status("pcReelStatus", "There is no script to send. Write one above, or type your own.", "warn");
+    return;
+  }
+  const ok = window.CSHandoff && CSHandoff.put({
+    script,
+    voice: $("pcVoice").value || "Charon",
+    style: $("pcVoiceStyle").value.trim(),
+    headline: $("pcHeadline").value.replace(/\*/g, "").trim(),
+    handle: $("pcFooter").value.trim(),
+    picture: endCardThumb(),
+    from: "post-creator"
+  });
+  if (!ok) {
+    status("pcReelStatus", "This browser would not hold the handoff. Copy the script across by hand.", "warn");
+    return;
+  }
+  location.href = "/";
+});
+
+/* ============================================================
    Saving it
    ============================================================ */
 

@@ -8063,3 +8063,69 @@ if ($("btnVoiceAll")) {
     if (s2 && s2.scrollIntoView) s2.scrollIntoView({ behavior: "smooth", block: "start" });
   });
 }
+
+/* ============================================================
+   Arriving from the Post Creator.
+
+   The other page turns a news story into words; this one turns words into
+   a captioned vertical video. When someone presses "Open in Caption
+   Studio" over there, the script, the narrator and the end card come
+   across in local storage and are unpacked here.
+
+   Deliberately not carried over: the footage, which is already on this
+   machine and is the one thing worth choosing by hand, and the timings,
+   which cannot exist yet — they are measured against a recording that has
+   not been made. So this leaves the page exactly where step 3 normally
+   leaves it, with the words in the box and nothing pretending to be done.
+   ============================================================ */
+(function acceptHandoff() {
+  const gift = window.CSHandoff && window.CSHandoff.take();
+  if (!gift || !gift.script) return;
+
+  scriptEl.value = gift.script;
+  parseScript();
+  scriptEl.dispatchEvent(new Event("input", { bubbles: true }));
+
+  /* The narrator was chosen next door against the same story, so both the
+     fast track's box and step 2's should already agree with it. */
+  ["aiVoice", "autoVoice"].forEach(id => {
+    const el = $(id);
+    if (el && gift.voice && [...el.options].some(o => o.value === gift.voice)) el.value = gift.voice;
+  });
+  if (gift.style && $("aiVoiceStyle")) $("aiVoiceStyle").value = gift.style;
+
+  /* The headline is what the post was about, so it is the most useful
+     thing the fast track's topic box could be holding — even though the
+     script is already written and it will not be asked to write another. */
+  if (gift.headline && $("autoTopic") && !$("autoTopic").value.trim()) {
+    $("autoTopic").value = gift.headline;
+  }
+
+  if (gift.picture) {
+    try {
+      setEndCardPic(gift.picture, "from the post");
+      const on = $("endCardOn");
+      if (on && !on.checked) { on.checked = true; on.dispatchEvent(new Event("change", { bubbles: true })); }
+      if (gift.handle && $("endCardHandle") && !$("endCardHandle").value.trim()) {
+        $("endCardHandle").value = gift.handle;
+      }
+    } catch (e) {}
+  }
+
+  try { saveSessionState(); } catch (e) {}
+
+  /* Not say(). That line belongs to the timing meter, which repaints it the
+     moment the script parses — the notice was written and then overwritten
+     before anyone could read it. The fast track's own status sits beside the
+     button this message is pointing at, and nothing else writes to it. */
+  const note = $("autoStatus");
+  if (note) {
+    note.className = "status ok";
+    note.textContent = S.clips.length
+      ? "Script and narrator came over from the Post Creator. Press ⚡ Make it for me to speak it and time it."
+      : "Script and narrator came over from the Post Creator. Add your clips in step 1, then press ⚡ Make it for me.";
+  }
+
+  const step = $("step0") || $("step1");
+  if (step && step.scrollIntoView) step.scrollIntoView({ behavior: "smooth", block: "start" });
+})();
