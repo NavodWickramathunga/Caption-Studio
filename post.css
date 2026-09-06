@@ -1,0 +1,82 @@
+/* ============================================================
+   Post Creator — only what the captions tool does not already style.
+
+   style.css comes first and carries the palette, the buttons, the steps
+   and the modal. Everything here is either a shape that page has no use
+   for (a square preview, a layout picker) or a correction to a rule that
+   assumed a 9:16 frame.
+   ============================================================ */
+
+/* The captions stage is pinned to 9:16 by .frame. A post is square,
+   portrait or story-shaped depending on step 5, so the aspect comes from
+   a variable the script sets rather than from the stylesheet. */
+.pc-frame{
+  position:relative;width:100%;max-width:420px;margin:0 auto;
+  aspect-ratio:var(--pc-aspect, 1 / 1);
+  background:#05080b;border:1px solid var(--line);border-radius:14px;overflow:hidden;
+  box-shadow:0 24px 60px -30px rgba(0,0,0,.9);
+  transition:aspect-ratio .2s;
+}
+.pc-frame canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
+.pc-frame .empty{
+  position:absolute;inset:0;z-index:2;display:flex;flex-direction:column;gap:8px;
+  align-items:center;justify-content:center;text-align:center;padding:30px;color:var(--ivory-faint);
+  background:#05080b;
+}
+.pc-frame .empty[hidden]{display:none}
+.pc-frame .empty strong{
+  display:block;font-family:var(--display);font-size:16px;letter-spacing:.06em;
+  text-transform:uppercase;color:var(--ivory-dim);
+}
+.pc-frame .empty span{font-size:12.5px;max-width:230px}
+
+/* The preview column carries more than a video did, so it scrolls with the
+   page instead of sticking to the top of a window it no longer fits in. */
+.post-main .stage-col{position:static}
+
+/* A small card for the two optional extras, quieter than a .step. */
+.pc-panel{
+  background:var(--panel);border:1px solid var(--line-soft);border-radius:12px;
+  padding:14px 16px 16px;max-width:420px;margin:0 auto;width:100%;
+}
+.pc-panel h3{
+  margin:0 0 6px;font-family:var(--display);font-weight:400;font-size:13.5px;
+  letter-spacing:.075em;text-transform:uppercase;color:var(--ivory);
+}
+.pc-panel .hint{margin-bottom:10px}
+
+/* The text inputs style.css never needed — it only had range, file and
+   select. Matched to the textarea rule so a row of mixed fields lines up. */
+.pc-input{
+  width:100%;font:inherit;font-size:13px;color:var(--ivory);background:var(--panel-2);
+  border:1px solid var(--line);border-radius:8px;padding:9px 11px;
+}
+.pc-input::placeholder{color:var(--ivory-faint)}
+
+/* ---------- the four headlines ---------- */
+.head-list{display:flex;flex-direction:column;gap:8px}
+.head-list:empty{display:none}
+.head-opt{
+  text-align:left;width:100%;padding:11px 13px;line-height:1.4;font-size:13px;
+  border-radius:10px;display:block;
+}
+.head-opt b{display:block;font-size:10.5px;letter-spacing:.09em;text-transform:uppercase;
+  color:var(--ivory-dim);font-family:var(--mono);font-weight:600;margin-bottom:4px}
+.head-opt[aria-pressed="true"]{background:var(--vein-deep);border-color:var(--vein);color:#dbe9fb}
+.head-opt[aria-pressed="true"] b{color:#a9c8ec}
+
+/* ---------- the layout picker ---------- */
+.tpl-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:9px}
+.tpl{padding:0;overflow:hidden;display:flex;flex-direction:column;gap:0;border-radius:10px}
+.tpl canvas{width:100%;height:auto;display:block;background:#05080b}
+.tpl span{
+  padding:6px 4px;font-size:10.5px;letter-spacing:.04em;color:var(--ivory-dim);
+  text-align:center;line-height:1.2;
+}
+.tpl[aria-pressed="true"]{border-color:var(--vein);box-shadow:0 0 0 1px var(--vein)}
+.tpl[aria-pressed="true"] span{color:var(--ivory)}
+
+/* ---------- narrow windows ---------- */
+@media (max-width:900px){
+  .post-main{grid-template-columns:1fr}
+}

@@ -117,6 +117,9 @@ app.use(express.static(ROOT, { index: false }));
 
 app.get('*', (req, res) => {
   if (req.path === '/voice-match') return res.sendFile(path.join(ROOT, 'voice-match.html'));
+  /* The post maker is a second tool on the same account, not a second app —
+     same session cookie, same key, same meter. */
+  if (req.path === '/post') return res.sendFile(path.join(ROOT, 'post.html'));
   /* Three names for one page — AdSense and app stores each ask for a
      different one, and all three should land somewhere real. */
   if (['/legal', '/terms', '/privacy'].includes(req.path)) {

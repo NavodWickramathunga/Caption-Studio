@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Post Creator · Caption Studio</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Anton&family=JetBrains+Mono:wght@400;600&family=Inter:wght@400;500;600&family=Noto+Sans+Sinhala:wght@700&family=Noto+Sans+Tamil:wght@700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="post.css">
+
+<div class="app">
+<div class="chrome">
+<div class="topbar">
+  <h1>Post <em>Creator</em></h1>
+  <p>A story in, a finished post out — headline, picture, layout, MP4.</p>
+  <a class="api-key-btn" href="/" title="The captions tool">← Caption Studio</a>
+  <button id="apiKeyBtn" class="api-key-btn">🔑 Gemini Key</button>
+  <div id="acctBox" class="acct-box"></div>
+  <div class="privacy">Your pictures stay on this machine · <a href="/legal" style="color:inherit">Terms &amp; privacy</a></div>
+</div>
+
+<nav class="steprail" id="stepRail" aria-label="Steps">
+  <a href="#pstep1" data-step="pstep1"><i>1</i><span>Story</span></a>
+  <a href="#pstep2" data-step="pstep2"><i>2</i><span>Headline</span></a>
+  <a href="#pstep3" data-step="pstep3"><i>3</i><span>Picture</span></a>
+  <a href="#pstep4" data-step="pstep4"><i>4</i><span>Layout</span></a>
+  <a href="#pstep5" data-step="pstep5"><i>5</i><span>Export</span></a>
+</nav>
+</div>
+
+<main class="post-main">
+
+  <!-- ============ PREVIEW ============ -->
+  <div class="stage-col">
+    <div class="pc-frame" id="pcFrame">
+      <canvas id="pcCanvas"></canvas>
+      <div class="empty" id="pcEmpty">
+        <strong>Nothing to show yet</strong>
+        <span>Write a headline in step 2 and the post starts building itself.</span>
+      </div>
+    </div>
+
+    <div class="transport">
+      <button id="pcPng" class="primary" disabled>Download PNG</button>
+      <button id="pcJpg" disabled>JPG</button>
+    </div>
+
+    <!-- The voiceover is the same narrator, the same key and the same meter
+         as the captions tool next door. A still post read aloud is a video
+         post, and that is the only difference between the two exports. -->
+    <div class="pc-panel">
+      <h3>Voiceover <span class="optional">optional</span></h3>
+      <p class="hint">Speaks the headline over the picture. Signed in, it goes through our key — same as step 2 of Caption Studio.</p>
+      <div class="grid2">
+        <div class="field">
+          <label for="pcVoice">Narrator</label>
+          <select id="pcVoice"></select>
+        </div>
+        <div class="field">
+          <label for="pcVoiceStyle">Delivery</label>
+          <input type="text" id="pcVoiceStyle" class="pc-input" placeholder="Read it like a news anchor">
+        </div>
+      </div>
+      <div class="vo-actions">
+        <button id="pcSpeak">Speak the headline</button>
+        <button id="pcPlayVoice" class="ghost" disabled>Play</button>
+        <button id="pcClearVoice" class="ghost" disabled>Remove</button>
+      </div>
+      <div class="status" id="pcVoiceStatus"></div>
+    </div>
+
+    <div class="pc-panel">
+      <h3>Background music <span class="optional">optional</span></h3>
+      <div class="filerow">
+        <label class="filebtn">🎵 Choose a track<input type="file" id="pcMusicFile" accept="audio/*"></label>
+        <span class="filename none" id="pcMusicName">No track</span>
+        <button id="pcMusicClear" class="ghost" disabled>✕</button>
+      </div>
+      <div class="grid2" style="margin-top:12px">
+        <div class="field">
+          <label for="pcVolume">Volume <b id="pcVolumeOut">70%</b></label>
+          <input type="range" id="pcVolume" min="0" max="100" value="70">
+        </div>
+        <div class="field">
+          <label for="pcSeconds">Length <b id="pcSecondsOut">6s</b></label>
+          <input type="range" id="pcSeconds" min="3" max="30" value="6">
+        </div>
+      </div>
+      <label class="chk"><input type="checkbox" id="pcFade" checked> Fade out the last 2 seconds</label>
+    </div>
+
+    <div class="transport">
+      <button id="pcMp4" class="primary" disabled>Render MP4</button>
+    </div>
+    <div class="status" id="pcRenderStatus"></div>
+  </div>
+
+  <!-- ============ STEPS ============ -->
+  <div class="steps">
+
+    <section class="step" id="pstep1">
+      <h2><i>1</i>The story</h2>
+      <p class="hint">Paste the news text — any language. The headlines come back in the same one.</p>
+      <textarea id="pcStory" placeholder="Paste a few sentences of the story here. Two or three is plenty."></textarea>
+      <div class="vo-actions">
+        <button id="pcWriteHeads" class="primary">Write 4 headlines</button>
+        <button id="pcSkipHeads" class="ghost">Skip — I'll write my own</button>
+      </div>
+      <div class="field" style="margin-top:14px">
+        <label for="pcAudience">Who is reading it</label>
+        <input type="text" id="pcAudience" class="pc-input"
+               value="Adults 45–80. Plain words, a clear stake, read fast on a phone.">
+      </div>
+      <div class="status" id="pcStoryStatus"></div>
+    </section>
+
+    <section class="step" id="pstep2">
+      <h2><i>2</i>The headline</h2>
+      <p class="hint">Pick an angle, then edit it freely. Wrap a word in <code>*stars*</code> to turn it yellow.</p>
+      <div class="head-list" id="pcHeadList"></div>
+      <div class="field" style="margin-top:12px">
+        <label for="pcHeadline">The headline that gets drawn</label>
+        <textarea id="pcHeadline" style="min-height:70px" placeholder="Type it here, or pick one above."></textarea>
+      </div>
+      <div class="grid2" style="margin-top:12px">
+        <div class="field">
+          <label for="pcKicker">Kicker <span class="optional">the small badge</span></label>
+          <input type="text" id="pcKicker" class="pc-input" placeholder="BREAKING">
+        </div>
+        <div class="field">
+          <label for="pcFooter">Footer <span class="optional">your page name</span></label>
+          <input type="text" id="pcFooter" class="pc-input" placeholder="@yourpage">
+        </div>
+      </div>
+    </section>
+
+    <section class="step" id="pstep3">
+      <h2><i>3</i>The picture</h2>
+      <p class="hint">The AI writes the brief, then makes the photo from it — or drop your own in and skip both.</p>
+      <div class="vo-actions">
+        <button id="pcBriefBtn">Write the photo brief</button>
+      </div>
+      <textarea id="pcBrief" style="min-height:70px;margin-top:10px"
+                placeholder="A short description of the photo. Written for you, or typed by you."></textarea>
+      <div class="vo-actions">
+        <button id="pcGenPic" class="primary">Generate the photo</button>
+        <label class="filebtn">🖼 Use my own<input type="file" id="pcPicFile" accept="image/*"></label>
+      </div>
+      <div class="filerow" style="margin-top:10px">
+        <span class="filename none" id="pcPicName">No picture</span>
+        <button id="pcPicClear" class="ghost" disabled>✕</button>
+      </div>
+      <div class="status" id="pcPicStatus"></div>
+    </section>
+
+    <section class="step" id="pstep4">
+      <h2><i>4</i>Layout</h2>
+      <p class="hint">Seven ways to arrange the same headline and picture.</p>
+      <div class="tpl-grid" id="pcTemplates"></div>
+      <div class="field" style="margin-top:14px">
+        <label>Accent colour</label>
+        <div class="swatches" id="pcAccents"></div>
+      </div>
+    </section>
+
+    <section class="step" id="pstep5">
+      <h2><i>5</i>Size</h2>
+      <p class="hint">Everything exports at twice these numbers, so it stays sharp when the feed resizes it.</p>
+      <div class="seg" id="pcSizes" role="tablist"></div>
+    </section>
+
+  </div>
+</main>
+</div>
+
+<!-- Same modal, same key, same local storage as the captions tool — someone
+     who pasted a key there does not get asked for it again here. -->
+<div class="modal-overlay" id="apiKeyModal">
+  <div class="modal-content">
+    <div class="modal-header">
+      <h3>Gemini AI Settings</h3>
+      <button class="modal-close" id="modalCloseBtn">&times;</button>
+    </div>
+    <p class="hint" style="margin-bottom:14px;">
+      Enter your Google Gemini API Key to write headlines, photo briefs and voiceovers from this
+      browser. It is kept in local storage and goes nowhere else.
+    </p>
+    <div class="field" style="margin-bottom:16px;">
+      <label for="apiKeyInput">Gemini API Key</label>
+      <input type="password" id="apiKeyInput" placeholder="AIzaSy..." class="pc-input" style="font-family:var(--mono)">
+    </div>
+    <div style="display:flex; align-items:center; gap:10px;">
+      <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener" style="font-size:12px; color:var(--vein);">Get a free Gemini API Key →</a>
+      <div style="display:flex; gap:8px; margin-left:auto;">
+        <button id="apiKeyClearBtn" class="ghost" style="font-size:12px;">Clear Key</button>
+        <button id="apiKeySaveBtn" class="primary" style="font-size:12px;">Save Settings</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="oops.js"></script>
+<script src="account.js"></script>
+<script src="post.js"></script>
