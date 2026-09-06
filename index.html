@@ -14,6 +14,7 @@
   <p>Karaoke captions for vertical clips — tapped in by hand or powered by AI.</p>
   <button id="autoSaveBadge" class="api-key-btn" style="display:none;" title="Session restored from auto-save. Click to clear.">💾 Auto-Saved <span style="font-size:10px; opacity:0.8;">✕</span></button>
   <button id="projectsBtn" class="api-key-btn" style="display:none" title="Your saved projects">📁 Projects</button>
+  <a class="api-key-btn" href="/post" title="Turn a story into a social post">🖼 Post Creator</a>
   <button id="apiKeyBtn" class="api-key-btn">🔑 Gemini Key</button>
   <div id="acctBox" class="acct-box"></div>
   <!-- It used to say "never", which stopped being true the moment a reference
@@ -784,8 +785,22 @@
         </select>
       </div>
       <label class="chk" style="align-self:center"><input type="checkbox" id="ctaBell" checked> Ringing bell</label>
+
+      <!-- One ask is easy to miss on a clip somebody scrubs through. The same
+           sticker can come back later in the video: same wording, same pill,
+           shown again at another second. -->
+      <div class="field" style="flex-basis:100%; min-width:220px;">
+        <label>Shows again at <span style="opacity:.7">(optional)</span></label>
+        <div class="cta-times" id="ctaTimes">
+          <button type="button" id="ctaAddTime" class="ghost">+ Show it again</button>
+          <button type="button" id="ctaSuggest" class="ghost"
+                  title="Reads a few frames of the clip and the script, and picks the moments where the ask fits.">✨ Pick the moments for me</button>
+        </div>
+        <input type="hidden" id="ctaRepeats" value="">
+      </div>
     </div>
     <p class="hint" id="ctaWho" style="margin:6px 0 0;font-size:11.5px"></p>
+    <p class="hint" id="ctaSaid" style="display:none;margin:6px 0 0;font-size:11.5px;white-space:pre-line"></p>
 
     <div id="coachNotes" style="display:none;flex-direction:column;gap:6px;font-size:12.5px;
          color:var(--ivory-dim);background:var(--panel-2);border:1px solid var(--line);

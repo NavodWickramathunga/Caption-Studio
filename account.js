@@ -120,11 +120,14 @@ async function csSignOut() {
 
 /* ---------- the two calls that cost money ---------- */
 
-CS.serverText = async function (prompt, schema) {
+/* images is an optional list of { mimeType, data } stills for the model to
+   look at. They go the same way as the words, through our key, so seeing the
+   video is not a thing only a customer with their own Gemini key can do. */
+CS.serverText = async function (prompt, schema, images) {
   const out = await csJSON("/api/ai/text", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ prompt, schema })
+    body: JSON.stringify({ prompt, schema, images: images || undefined })
   });
   return out.text;
 };

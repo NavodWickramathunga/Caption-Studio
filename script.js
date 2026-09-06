@@ -3033,15 +3033,51 @@ updateApiKeyBtnState();
 /* The second argument started life as one WAV and is now "whatever you want
    Gemini to look at" - a blob, or a list of them, in the order they should be
    read. The mime type comes off the blob, so a PNG goes up as a PNG. */
+async function blobToBase64(blob) {
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  let binary = "";
+  /* One character at a time overflows the argument list on a large file, so
+     String.fromCharCode is fed in chunks rather than a whole megabyte. */
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.byteLength; i += CHUNK) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(binary);
+}
+
+/* A schema answer comes back as text, and a model asked for JSON still
+   sometimes wraps it in a code fence. Take both. */
+function parseJsonReply(raw) {
+  const text = String(raw == null ? "" : raw).trim()
+    .replace(/^```(?:json)?/i, "").replace(/```$/, "").trim();
+  return JSON.parse(text);
+}
+
 async function callGeminiApi(promptText, mediaBlob = null, jsonSchema = null) {
   /* When a server is answering, it holds the key and counts the spend,
-     so the browser never sees either. Media still goes the old way:
-     only transcription sends audio, and that is not on the paid path
-     yet. */
+     so the browser never sees either. */
   const CS = window.CS;
-  if (CS && CS.ai.mode === "server" && !mediaBlob) {
+  const asked = Array.isArray(mediaBlob) ? mediaBlob.filter(Boolean)
+              : mediaBlob ? [mediaBlob] : [];
+  /* Pictures can go through the server now; sound still cannot, because
+     transcription is not on the paid path yet and a WAV is far too big for
+     that route in any case. */
+  const allImages = asked.length > 0 &&
+                    asked.every(b => String(b.type || "").indexOf("image/") === 0);
+
+  if (CS && CS.ai.mode === "server" && (!asked.length || allImages)) {
     if (!CS.ai.user) throw new Error("Sign in to use this — the button is in the top right.");
-    return await CS.serverText(promptText, jsonSchema || undefined);
+    const shots = [];
+    for (const blob of asked) {
+      shots.push({ mimeType: blob.type, data: await blobToBase64(blob) });
+    }
+    const raw = await CS.serverText(promptText, jsonSchema || undefined,
+                                    shots.length ? shots : undefined);
+    /* The server hands back the model's text. A schema was a request for
+       JSON, so the caller is expecting an object, not a string with braces
+       in it — the key path below has always parsed it, and this one did not,
+       which is why a schema call through the server came back unusable. */
+    return jsonSchema ? parseJsonReply(raw) : String(raw).trim();
   }
 
   const apiKey = getApiKey();
@@ -3055,19 +3091,10 @@ async function callGeminiApi(promptText, mediaBlob = null, jsonSchema = null) {
   const media = Array.isArray(mediaBlob) ? mediaBlob.filter(Boolean)
               : mediaBlob ? [mediaBlob] : [];
   for (const blob of media) {
-    const arrayBuffer = await blob.arrayBuffer();
-    const bytes = new Uint8Array(arrayBuffer);
-    let binary = "";
-    /* One character at a time overflows the argument list on a large file, so
-       String.fromCharCode is fed in chunks rather than a whole megabyte. */
-    const CHUNK = 0x8000;
-    for (let i = 0; i < bytes.byteLength; i += CHUNK) {
-      binary += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
-    }
     parts.push({
       inlineData: {
         mimeType: blob.type || "audio/wav",
-        data: btoa(binary)
+        data: await blobToBase64(blob)
       }
     });
   }
@@ -3782,17 +3809,96 @@ function syncCtaLabels() {
   const who = $("ctaWho");
   if (who) {
     if (!c) { who.textContent = ""; }
-    else if (len > 1 && c.at >= len) {
-      who.textContent = `That's past the end of the ${len.toFixed(1)}s video — the sticker would never show.`;
+    else if (len > 1 && c.times.every(t => t >= len)) {
+      who.textContent = c.times.length > 1
+        ? `Every one of those is past the end of the ${len.toFixed(1)}s video — the sticker would never show.`
+        : `That's past the end of the ${len.toFixed(1)}s video — the sticker would never show.`;
       who.style.color = "#e0b341";
     } else {
-      const ends = c.at + c.dur;
-      who.textContent = `“${c.text}” slides in at ${c.at.toFixed(1)}s and leaves at ${ends.toFixed(1)}s, ` +
+      const shown = c.times.filter(t => len <= 1 || t < len);
+      const missed = c.times.length - shown.length;
+      const mark = shown.map(t => t.toFixed(1) + "s");
+      const when = mark.length === 1
+        ? `slides in at ${mark[0]} and stays ${c.dur.toFixed(1)}s`
+        : `shows ${mark.length} times — at ${mark.slice(0, -1).join(", ")} and ${mark[mark.length - 1]} — ` +
+          `for ${c.dur.toFixed(1)}s each`;
+      const ends = shown[shown.length - 1] + c.dur;
+      who.textContent = `“${c.text}” ${when}, ` +
         `clear of where ${plat().label} puts its own buttons. It's drawn into the video, ` +
         `so it's there in the MP4 too.` +
-        (len > 1 && ends > len ? ` The video ends first, at ${len.toFixed(1)}s.` : "");
+        (missed ? ` ${missed} of the later ${missed === 1 ? "times is" : "times are"} past the end of the video.` : "") +
+        (len > 1 && ends > len ? ` The last one is still on screen when the video ends at ${len.toFixed(1)}s.` : "");
       who.style.color = "";
     }
+  }
+  renderCtaTimes();
+}
+
+/* Where another showing goes if it is simply asked for: a clear gap after
+   the last one, and finishing before the video does. Two pills back to back
+   read as one long pill, so the gap is deliberate. */
+function nextCtaTime() {
+  const c = ctaSettings();
+  if (!c) return null;
+  const len = videoLength();
+  const last = c.times[c.times.length - 1];
+  const at = Math.round((last + c.dur + 2) * 2) / 2;
+  if (len > 1 && at + c.dur > len) return null;
+  return at;
+}
+
+/* One chip per extra showing. The second stays editable in the chip, because
+   the point of asking twice is to ask where the clip goes quiet, and that is
+   a particular second rather than "some time later". */
+function renderCtaTimes() {
+  const box = $("ctaTimes");
+  if (!box) return;
+  const add = $("ctaAddTime");
+
+  /* Rebuilding the chips while one is being typed into would take the
+     cursor away mid-number, and this runs on every slider nudge. */
+  if (box.contains(document.activeElement) && document.activeElement !== add) return;
+  Array.from(box.querySelectorAll(".cta-chip")).forEach(el => el.remove());
+
+  const list = ctaRepeats().sort((a, b) => a - b);
+  list.forEach((v, i) => {
+    const chip = document.createElement("span");
+    chip.className = "cta-chip";
+
+    const num = document.createElement("input");
+    num.type = "number"; num.min = "0"; num.step = "0.5";
+    num.value = v.toFixed(1);
+    num.className = "cta-chip-in";
+    num.setAttribute("aria-label", "Another second to show the sticker at");
+    num.addEventListener("change", () => {
+      const n = parseFloat(num.value);
+      const next = list.slice();
+      next[i] = (isFinite(n) && n >= 0) ? n : v;
+      setCtaRepeats(next);
+    });
+    chip.appendChild(num);
+
+    const unit = document.createElement("span");
+    unit.textContent = "s";
+    chip.appendChild(unit);
+
+    const x = document.createElement("button");
+    x.type = "button";
+    x.textContent = "×";
+    x.title = "Stop showing it at " + v.toFixed(1) + "s";
+    x.addEventListener("click", () => setCtaRepeats(list.filter((_, j) => j !== i)));
+    chip.appendChild(x);
+
+    box.insertBefore(chip, add);
+  });
+
+  if (add) {
+    const at = nextCtaTime();
+    add.disabled = at == null;
+    add.textContent = at == null ? "No room for another one" : "+ Show it again at " + at.toFixed(1) + "s";
+    add.title = at == null
+      ? "The video is not long enough to fit another showing after the last one."
+      : "Adds another showing of the same sticker at " + at.toFixed(1) + "s. The second can be changed after.";
   }
 }
 
@@ -3825,13 +3931,247 @@ if ($("ctaStyle")) {
   $("ctaStyle").addEventListener("change", () => syncCtaText(true));
 }
 
+/* ---- letting the model pick the moments ----
+
+   When to ask for the follow is a judgement about the video, not a number
+   anyone can guess off a slider: it belongs after the hook has landed, on a
+   cut or in a pause rather than across the middle of a sentence, and away
+   from the moment the clip is making its point. So show the model the video
+   and let it say.
+
+   What goes up is a handful of stills with their timecodes, the script with
+   the timings already worked out, and where the cuts are. What comes back is
+   a second and a reason for each showing. */
+
+/* A few frames spread across the whole timeline, each carrying the second it
+   was taken from. Small on purpose: the model is reading composition and what
+   is happening, not fine detail, and six large stills is a slow upload on a
+   phone. */
+async function ctaGrabStills(want) {
+  if (!S.clips.length) return [];
+  const len = videoLength();
+  if (!(len > 0.5)) return [];
+
+  const cv = document.createElement("canvas");
+  const c = cv.getContext("2d", { alpha: false });
+  const shots = [];
+  const parked = new Map();
+
+  for (let i = 0; i < want; i++) {
+    /* Across the middle of each slice rather than on the edges: the very
+       first and last frames of a video are often a fade. */
+    const at = len * (i + 0.5) / want;
+    const hit = clipAt(at);
+    if (!hit) continue;
+    const el = hit.clip.el;
+    if (!el.videoWidth || !el.videoHeight) continue;
+    if (!parked.has(el)) { parked.set(el, el.currentTime); try { el.pause(); } catch (e) {} }
+
+    const scale = Math.min(1, 512 / Math.max(el.videoWidth, el.videoHeight));
+    cv.width = Math.max(2, Math.round(el.videoWidth * scale));
+    cv.height = Math.max(2, Math.round(el.videoHeight * scale));
+    await seekElement(el, Math.min(hit.local, Math.max(0.05, hit.clip.duration - 0.05)));
+    c.drawImage(el, 0, 0, cv.width, cv.height);
+    const blob = await new Promise(r => cv.toBlob(r, "image/jpeg", 0.7));
+    if (blob) shots.push({ at: at, blob: blob });
+  }
+
+  /* Put every clip back where it was, or the preview jumps to wherever the
+     last still happened to be taken from. */
+  for (const [el, was] of parked) { try { await seekElement(el, was); } catch (e) {} }
+  return shots;
+}
+
+/* A full stop, allowing for a closing quote or bracket after it. */
+const SENTENCE_END = /[.!?]['"’”)\]]?\s*$/;
+
+/* The script as the model can use it: what is said, and when. Broken at
+   sentence ends and at real pauses, because those are the seams a sticker can
+   land on without covering a thought. */
+function ctaSpokenLines() {
+  const timed = S.words.filter(w => w.start !== null && w.end !== null);
+  if (!timed.length) return "";
+  const lines = [];
+  let run = [], from = timed[0].start;
+  timed.forEach((w, i) => {
+    if (!run.length) from = w.start;
+    run.push(w.raw || w.text);
+    const next = timed[i + 1];
+    const ended = SENTENCE_END.test(w.raw || "");
+    const gap = next ? next.start - w.end : Infinity;
+    if (ended || gap > 0.35 || run.length >= 14 || !next) {
+      lines.push(from.toFixed(1) + "-" + w.end.toFixed(1) + "s: " + run.join(" "));
+      run = [];
+    }
+  });
+  return lines.join("\n");
+}
+
+const CTA_SUGGEST_SCHEMA = {
+  type: "OBJECT",
+  properties: {
+    times: {
+      type: "ARRAY",
+      items: {
+        type: "OBJECT",
+        properties: {
+          at: { type: "NUMBER" },
+          why: { type: "STRING" }
+        },
+        required: ["at", "why"]
+      }
+    }
+  },
+  required: ["times"]
+};
+
+function ctaSuggestPrompt(c, len, shots) {
+  const spoken = ctaSpokenLines();
+  const cuts = S.clips.length > 1
+    ? S.clips.slice(1).map(cl => cl.start.toFixed(1) + "s").join(", ")
+    : "";
+  /* Room for one ask roughly every twelve seconds, and never more than three:
+     a sticker that keeps coming back stops being an ask and starts being an
+     advert. */
+  const want = Math.max(1, Math.min(3, Math.floor(len / 12)));
+
+  return [
+    "You are placing a follow / subscribe sticker on a short vertical video.",
+    "",
+    "The video is " + len.toFixed(1) + " seconds long and is going to " + plat().label + ".",
+    "The sticker reads " + JSON.stringify(c.text) + ". It slides in, stays " +
+      c.dur.toFixed(1) + " seconds, then slides out. It is drawn over the picture " +
+      "near the " + c.pos + " of the frame.",
+    "",
+    shots.length
+      ? "The images are still frames from this video, in order, taken at " +
+        shots.map(s => s.at.toFixed(1) + "s").join(", ") + " respectively."
+      : "There are no frames to look at this time.",
+    "",
+    spoken ? "This is what is said, with the timings:\n" + spoken
+           : "Nothing has been timed to the video yet.",
+    cuts ? "The cuts between shots are at: " + cuts + "." : null,
+    "",
+    "Give me " + want + (want === 1 ? " second" : " different seconds") + " to show it at.",
+    "",
+    "Put it where somebody enjoying the video would not mind being asked:",
+    "- after the hook has done its work, so never in the first two seconds;",
+    "- on a cut or in a pause, not across the middle of a sentence;",
+    "- not over the moment the video is making its point, and not over a",
+    "  number, a name, or anything on screen the viewer needs to read;",
+    "- it must finish before the video does, so no later than " +
+      Math.max(0, len - c.dur).toFixed(1) + "s;",
+    want > 1 ? "- leave at least " + (c.dur + 2).toFixed(1) + " seconds between them." : null,
+    "",
+    "For each one, `at` is the second it should appear, to one decimal place,",
+    "and `why` is at most twelve words saying what is happening there that",
+    "makes it a good moment." + (want > 1 ? " Earliest first." : "")
+  ].filter(l => l !== null).join("\n");
+}
+
+let ctaSuggestBusy = false;
+
+async function suggestCtaTimes() {
+  const btn = $("ctaSuggest");
+  if (!btn || ctaSuggestBusy) return;
+
+  const c = ctaSettings();
+  if (!c) return;
+  const len = videoLength();
+  if (!(len > 1)) {
+    ctaSay("Add a clip in step 1 first — there is no video to read yet.", "warn");
+    return;
+  }
+  if (len <= c.dur) {
+    ctaSay("The sticker stays longer than this clip lasts. Shorten it first.", "warn");
+    return;
+  }
+
+  ctaSuggestBusy = true;
+  startAiClock(btn, "looking");
+  try {
+    ctaSay("Taking a few frames…");
+    let shots = [];
+    try { shots = await ctaGrabStills(Math.max(3, Math.min(6, Math.round(len / 5)))); }
+    catch (e) { shots = []; }
+
+    setAiClockLabel(btn, "reading");
+    ctaSay(shots.length ? "Reading " + shots.length + " frames and the script…"
+                        : "Reading the script…");
+
+    const reply = await callGeminiApi(ctaSuggestPrompt(c, len, shots),
+                                      shots.map(s => s.blob), CTA_SUGGEST_SCHEMA);
+
+    /* A model asked for seconds will now and then hand back one past the end
+       of the video, or two half a second apart. The answer is a suggestion,
+       and it is held to the same rules a person moving the sliders is. */
+    const latest = Math.max(0, len - c.dur);
+    const picked = [];
+    ((reply && reply.times) || [])
+      .map(t => ({ at: Math.round((Number(t && t.at) || 0) * 2) / 2,
+                   why: String((t && t.why) || "").slice(0, 90) }))
+      .filter(t => isFinite(t.at) && t.at >= 0 && t.at <= latest)
+      .sort((a, b) => a.at - b.at)
+      .forEach(t => {
+        if (picked.length >= 4) return;
+        if (picked.some(p => Math.abs(p.at - t.at) < c.dur + 1)) return;
+        picked.push(t);
+      });
+
+    if (!picked.length) {
+      ctaSay("Nothing came back that fits inside this clip — your times are unchanged.", "warn");
+      stopAiClock(btn);
+      return;
+    }
+
+    /* The first goes on the slider and the rest become chips: the same places
+       they would have been put by hand, so everything downstream — the
+       preview, the export, the brand kit — behaves as though they were. */
+    $("ctaAt").value = picked[0].at;
+    $("ctaAt").dispatchEvent(new Event("input", { bubbles: true }));
+    setCtaRepeats(picked.slice(1).map(t => t.at));
+
+    ctaSay(picked.map(t => t.at.toFixed(1) + "s — " + t.why).join("\n"), "ok");
+    stopAiClock(btn, picked.length === 1 ? "✓ One moment" : "✓ " + picked.length + " moments");
+  } catch (e) {
+    ctaSay(String((e && e.message) || e), "warn");
+    stopAiClock(btn);
+  } finally {
+    ctaSuggestBusy = false;
+  }
+}
+
+/* What the model said, kept under the row. It is wiped as soon as a slider
+   moves, so it can never sit there explaining times that have since been
+   changed by hand. */
+function ctaSay(msg, kind) {
+  const el = $("ctaSaid");
+  if (!el) return;
+  el.textContent = msg || "";
+  el.style.display = msg ? "block" : "none";
+  el.style.color = kind === "warn" ? "#e0b341" : kind === "ok" ? "#9ec99e" : "";
+}
+
 if ($("ctaOn")) {
   $("ctaOn").addEventListener("change", e => {
     $("ctaRow").style.display = e.target.checked ? "flex" : "none";
     if (e.target.checked) syncCtaText(!$("ctaText").value.trim());
     syncCtaLabels();
   });
-  ["ctaAt", "ctaSecs", "ctaText", "ctaPos", "ctaBell", "ctaStyle"].forEach(id => {
+  if ($("ctaAddTime")) {
+    $("ctaAddTime").addEventListener("click", () => {
+      const at = nextCtaTime();
+      if (at != null) setCtaRepeats(ctaRepeats().concat([at]));
+    });
+  }
+  if ($("ctaSuggest")) $("ctaSuggest").addEventListener("click", suggestCtaTimes);
+
+  /* Moving a time by hand disagrees with whatever the model said about it,
+     so the note goes rather than sitting there describing the old seconds. */
+  ["ctaAt", "ctaSecs", "ctaPos"].forEach(id => {
+    if ($(id)) $(id).addEventListener("input", () => { if (!ctaSuggestBusy) ctaSay(""); });
+  });
+  ["ctaAt", "ctaSecs", "ctaText", "ctaPos", "ctaBell", "ctaStyle", "ctaRepeats"].forEach(id => {
     if ($(id)) $(id).addEventListener("input", syncCtaLabels);
     if ($(id)) $(id).addEventListener("change", syncCtaLabels);
   });
@@ -4288,13 +4628,46 @@ if ($("btnTestSound")) $("btnTestSound").addEventListener("click", testVoiceCapt
    as a blank rectangle in the export when the download is slow, and the
    export has no way to wait.
    ============================================================ */
+/* The seconds typed into the chips: the showings after the first one.
+   Kept in one hidden field so that saving a brand kit, which reads the
+   controls a person would use, picks them up like any other setting. */
+function ctaRepeats() {
+  const el = $("ctaRepeats");
+  if (!el) return [];
+  return String(el.value || "").split(",")
+    .map(v => parseFloat(v))
+    .filter(v => isFinite(v) && v >= 0);
+}
+
+function setCtaRepeats(list) {
+  const el = $("ctaRepeats");
+  if (!el) return;
+  el.value = list.slice().sort((a, b) => a - b).map(v => v.toFixed(1)).join(",");
+  renderCtaTimes();
+  syncCtaLabels();
+}
+
+/* Every second the sticker is shown at, in order, with the same second
+   never counted twice — two showings at the same moment is one showing
+   drawn twice, and the second one only makes the first look heavier. */
+function ctaTimes(first) {
+  const out = [];
+  [first].concat(ctaRepeats()).forEach(v => {
+    const t = Math.max(0, Math.round(v * 2) / 2);
+    if (!out.some(o => Math.abs(o - t) < 0.01)) out.push(t);
+  });
+  return out.sort((a, b) => a - b);
+}
+
 function ctaSettings() {
   const on = $("ctaOn");
   if (!on || !on.checked) return null;
   const st = ctaStyle();
+  const at = Math.max(0, parseFloat($("ctaAt") && $("ctaAt").value) || 0);
   return {
     text: (($("ctaText") && $("ctaText").value) || st.text).trim() || st.text,
-    at: Math.max(0, parseFloat($("ctaAt") && $("ctaAt").value) || 0),
+    at: at,
+    times: ctaTimes(at),
     dur: Math.max(1.5, parseFloat($("ctaSecs") && $("ctaSecs").value) || 3),
     pos: ($("ctaPos") && $("ctaPos").value) || "bottom",
     bell: !!($("ctaBell") && $("ctaBell").checked),
@@ -4483,8 +4856,17 @@ function drawBell(ctx, s, colour, swing) {
 function drawCta(ctx, W, H, t) {
   const c = ctaSettings();
   if (!c || !W || !H) return;
-  const p = (t - c.at) / c.dur;
-  if (p < 0 || p > 1) return;
+  /* Whichever showing is on screen at this instant. The list is in order,
+     so the last one that has begun and not yet finished is the one to draw;
+     everything below then works on that showing alone, which is why the
+     pulse and the bell restart each time rather than carrying on from the
+     first appearance. */
+  let start = null;
+  for (let i = 0; i < c.times.length; i++) {
+    if (t >= c.times[i] && t <= c.times[i] + c.dur) start = c.times[i];
+  }
+  if (start == null) return;
+  const p = (t - start) / c.dur;
 
   /* In fast, hold, out fast. The hold is where the pulse and the bell live,
      so they do not fight the arrival. */
@@ -4493,7 +4875,7 @@ function drawCta(ctx, W, H, t) {
   const leave = 1 - smooth((p - OUT) / (1 - OUT));
   const alpha = Math.min(appear, leave);
   const held = Math.min(appear, leave) >= 0.999;
-  const age = t - c.at;
+  const age = t - start;
 
   const padY = H * 0.014;
   const face = fontFor(c.text);

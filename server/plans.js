@@ -31,6 +31,11 @@ function ttsCostMicros(chars) {
    is not free and an unbounded loop is still an unbounded bill. */
 const TEXT_COST_MICROS = 300;      // ~$0.0003 for a short script
 
+/* A still frame is about 258 tokens of input, which at Flash input rates is
+   fractions of a cent — but a request carrying six of them is six times a
+   request carrying none, and the counter should say so. */
+const IMAGE_COST_MICROS = 120;     // per still frame sent up
+
 const PLANS = {
   free: {
     label: 'Free',
@@ -113,4 +118,5 @@ function allowanceSummary(user, used) {
   };
 }
 
-module.exports = { PLANS, planFor, checkAllowance, allowanceSummary, ttsCostMicros, TEXT_COST_MICROS };
+module.exports = { PLANS, planFor, checkAllowance, allowanceSummary, ttsCostMicros,
+                   TEXT_COST_MICROS, IMAGE_COST_MICROS };
