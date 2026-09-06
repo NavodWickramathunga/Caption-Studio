@@ -6854,7 +6854,8 @@ if ($("refFile")) {
 }
 
 /* One prompt for a whole 20-30 second script was the wrong shape. These
-   models make about eight seconds at a time, so a single paragraph had to
+   models make one clip at a time — ten or fifteen seconds depending on
+   which one you use, and never the whole video — so a single paragraph had to
    stand in for the entire video and came back vague — and vague prompts are
    what generic footage is made of. A short video is four or five shots, so
    ask for four or five prompts. */
@@ -6920,6 +6921,9 @@ async function studyReference() {
   }
 
   const inLang = lang ? " Write the script in " + lang + "." : "";
+  /* How long one clip can be depends on the model, and that is not
+     something to guess on the user's behalf — it is set in the panel. */
+  const clipMax = parseInt(($("clipMax") && $("clipMax").value) || "10", 10) || 10;
   /* A link on its own tells a text model nothing — it cannot open one. Say
      that in the prompt rather than letting it pretend it watched. */
   const seen = refState.mode === "file"
@@ -6939,8 +6943,12 @@ async function studyReference() {
       "the pacing, the shot types, how the captions behave.\n" +
       "\"script\": a spoken script for a 20-30 second vertical video on the user's subject, " +
       "built in the same shape. Spoken words only, no stage directions, no markdown." + inLang + "\n" +
-      "\"shots\": an array of 4 to 6 shots that together cover the whole script, in order. " +
-      "Each has \"line\" (the words from the script spoken over it), \"seconds\" (5 to 8), and " +
+      "\"shots\": enough shots to cover the whole script, in order, none longer than " +
+      clipMax + " seconds — that is the longest single clip this user's video model will make. " +
+      "Prefer a cut every 4 to 8 seconds even when longer is allowed: a held shot loses people, " +
+      "and the cuts are half of why a reel keeps them. " +
+      "Each has \"line\" (the words from the script spoken over it), \"seconds\" (at most " +
+      clipMax + "), and " +
       "\"prompt\" (for a text-to-video model).\n" + SHOT_BRIEF + "\n" +
       "\"prompt\": the shot 1 prompt again, on its own, for anyone who wants a single clip.\n\n" +
       "Write like a director briefing a camera operator who cannot see what you can. " +
