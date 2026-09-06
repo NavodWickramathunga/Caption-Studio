@@ -7634,3 +7634,50 @@ function syncClipPlan() {
   if ($(id)) $(id).addEventListener("change", syncClipPlan);
 });
 syncClipPlan();
+
+/* ============================================================
+   The voiceover, from the shot panel.
+
+   Everything needed already existed a panel away: the script writes into
+   step 3, step 2 speaks it, and since the voice is fitted to the footage
+   and timed against itself, the captions follow. What was missing was the
+   join — three moves across two panels, when the script and the clips are
+   both already here.
+
+   One voice over the whole thing, never one per clip. The clips are joined
+   end to end, and a narrator who restarts at every cut sounds like four
+   different videos stitched together.
+   ============================================================ */
+if ($("btnVoiceAll")) {
+  $("btnVoiceAll").addEventListener("click", async () => {
+    const text = ($("refScript") && $("refScript").value.trim()) || "";
+    if (!text) { setGenStatus("There is no script yet — press “Study it” first.", "warn"); return; }
+
+    /* Step 3 is where every other part of the app reads the script from, so
+       it goes there rather than being spoken straight out of this box. */
+    scriptEl.value = text;
+    scriptEl.dispatchEvent(new Event("input", { bubbles: true }));
+
+    if (!S.clips.length) {
+      setGenStatus("Making the voice now. Your clips are not in yet — add them in step 1 and " +
+                   "the voice will be re-fitted when you make it again.", "warn");
+    } else {
+      setGenStatus("Making one voice for all " + S.clips.length + " clips, fitting it to the " +
+                   "footage, and timing the words to it.", "ok");
+    }
+    /* makeVoiceFile does the rest: it stretches the voice to the length of
+       the clips and times the captions against the recording that ships. */
+    await makeVoiceFile();
+
+    /* It reports into step 2's own status line, which is a panel away from
+       the button that was pressed. A failure that lands somewhere you are
+       not looking reads as nothing happening at all, so it is repeated
+       here. */
+    if (!S.voiceoverBlob) {
+      const why = ($("aiVoiceStatus") && $("aiVoiceStatus").textContent.trim()) || "";
+      setGenStatus(why ? "No voice yet — " + why : "The voice was not made.", "warn");
+    }
+    const s2 = $("step2");
+    if (s2 && s2.scrollIntoView) s2.scrollIntoView({ behavior: "smooth", block: "start" });
+  });
+}
