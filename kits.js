@@ -71,6 +71,9 @@ window.CS = window.CS || {};
         style: val('ctaStyle'),
         text: val('ctaText'),
         at: Number(val('ctaAt', 3)),
+        /* The seconds it comes back at, after the first one. A string, so an
+           empty one still means "no repeats" rather than "not saved". */
+        repeats: String(val('ctaRepeats', '')),
         secs: Number(val('ctaSecs', 3)),
         pos: val('ctaPos'),
         bell: checked('ctaBell')
@@ -113,17 +116,39 @@ window.CS = window.CS || {};
 
     /* Checkboxes go through putChecked, not put: an unticked box is `false`,
        and put() throws away anything falsy, which is how "off" was silently
-       becoming "leave it as it is". */
-    putChecked('endCardOn', kit.endCardOn);
+       becoming "leave it as it is".
 
-    const st = kit.sticker || {};
-    putChecked('ctaOn', st.on);
-    put('ctaStyle', st.style);
-    put('ctaText', st.text, 'input');
-    put('ctaAt', st.at, 'input');
-    put('ctaSecs', st.secs, 'input');
-    put('ctaPos', st.pos);
-    putChecked('ctaBell', st.bell);
+       A kit saved before the switches were kept has no opinion about them,
+       and "no opinion" is not the same as "off" — switching off an end card
+       the person had turned on, because an old kit is silent about it, is a
+       change nobody asked for. Only a kit that actually carries the setting
+       gets to move the switch. */
+    if (kit.endCardOn !== undefined) putChecked('endCardOn', kit.endCardOn);
+
+    const st = kit.sticker;
+    if (st) {
+      putChecked('ctaOn', st.on);
+      /* A wording this version of the page no longer offers would leave the
+         picker showing nothing at all, which is worse than falling back to
+         the platform's own default. */
+      const styles = $('ctaStyle');
+      if (styles && st.style) {
+        const known = Array.prototype.some.call(styles.options, o => o.value === st.style);
+        put('ctaStyle', known ? st.style : 'auto');
+      }
+      put('ctaText', st.text, 'input');
+      put('ctaAt', st.at, 'input');
+      /* Not through put(): an empty list is exactly what a kit with a single
+         showing means, and put() drops empty values as "leave it alone",
+         which would keep the last kit's repeats hanging around. */
+      if ($('ctaRepeats') && st.repeats !== undefined) {
+        $('ctaRepeats').value = String(st.repeats || '');
+        $('ctaRepeats').dispatchEvent(new Event('input', { bubbles: true }));
+      }
+      put('ctaSecs', st.secs, 'input');
+      put('ctaPos', st.pos);
+      putChecked('ctaBell', st.bell);
+    }
 
     if (window.CS.setAllEndCards) window.CS.setAllEndCards(kit.endCards || {});
     if (window.CS.setPicture) window.CS.setPicture(kit.picture || null);
@@ -168,6 +193,25 @@ window.CS = window.CS || {};
     if (!el) return;
     el.className = 'kit-status' + (kind ? ' ' + kind : '');
     el.textContent = msg || '';
+  }
+
+  /* Say what the kit actually carried. The old wording named three things
+     whatever the kit held, which is how a kit that had brought back nothing
+     but colours still read as a success. */
+  function whatCameBack(kit) {
+    const got = [];
+    const look = kit.look || {};
+    if (look.hlColor || look.keyColor || look.animStyle) got.push('colours');
+    if ((kit.voice || {}).narrator) got.push('narrator');
+    const cards = kit.endCards || {};
+    if (Object.keys(cards).some(k => cards[k] && (cards[k].text || cards[k].handle))) got.push('end cards');
+    if (kit.picture) got.push('profile picture');
+    if (kit.sticker && kit.sticker.on) got.push('follow sticker');
+    if (kit.platform) got.push(kit.platform === 'facebook' ? 'Facebook' :
+                               kit.platform === 'youtube' ? 'YouTube Shorts' : 'TikTok');
+    if (!got.length) return 'there was nothing saved in it to bring back';
+    return got.slice(0, -1).join(', ') + (got.length > 1 ? ' and ' : '') + got[got.length - 1] +
+           (got.length > 1 ? ' are set' : ' is set');
   }
 
   /* Update and Delete only mean something once a kit is picked. */
@@ -216,7 +260,7 @@ window.CS = window.CS || {};
       const kit = loaded.find(k => k.id === $('kitPick').value);
       if (!kit) return say('Pick a kit first.', 'bad');
       CS.applyKit(kit);
-      say('Applied "' + kit.name + '" — colours, narrator and end cards are set.', 'ok');
+      say('Applied "' + kit.name + '" — ' + whatCameBack(kit) + '.', 'ok');
     });
 
     if ($('kitSave')) $('kitSave').addEventListener('click', async () => {

@@ -29,6 +29,21 @@ const MAX_KITS = 25;
 
 const clean = s => String(s == null ? '' : s).slice(0, 400);
 
+/* The seconds the follow sticker comes back at, as the page keeps them:
+   a comma-separated list. Parsed rather than trusted, because it arrives
+   as text and lands back in a slider. */
+function cleanTimes(v) {
+  return String(v == null ? '' : v).split(',')
+    .map(n => parseFloat(n))
+    .filter(n => isFinite(n) && n >= 0 && n <= 3600)
+    .map(n => Math.round(n * 2) / 2)
+    .filter((n, i, all) => all.indexOf(n) === i)
+    .sort((x, y) => x - y)
+    .slice(0, 12)
+    .map(n => n.toFixed(1))
+    .join(',');
+}
+
 /* Only these fields are stored. An allow-list rather than "whatever the
    browser sent" — otherwise the shape of a kit becomes whatever some
    future version of the page happens to put in the object, and a
@@ -38,6 +53,7 @@ function shapeKit(body) {
   const look = b.look || {};
   const voice = b.voice || {};
   const cards = b.endCards || {};
+  const st = b.sticker || {};
 
   const kit = {
     name: clean(b.name) || 'Untitled kit',
@@ -63,6 +79,27 @@ function shapeKit(body) {
     },
     endCards: {},
     endCardSecs: Number(b.endCardSecs) || 1.2,
+
+    /* Whether the end card and the sticker are shown at all, and everything
+       the sticker says. These were being read out of the page and sent, and
+       then quietly dropped here, so applying a kit brought back the colours
+       and the narrator and left the rest of the look behind. A kit is the
+       whole look or it is not worth saving. */
+    endCardOn: !!b.endCardOn,
+    sticker: {
+      on: !!st.on,
+      style: clean(st.style),
+      text: clean(st.text).slice(0, 40),
+      at: Math.max(0, Number(st.at) || 0),
+      repeats: cleanTimes(st.repeats),
+      secs: Math.min(8, Math.max(1.5, Number(st.secs) || 3)),
+      pos: st.pos === 'top' ? 'top' : 'bottom',
+      bell: !!st.bell
+    },
+
+    /* Which platform the kit was built for: it decides the safe zones and
+       which set of end-card wording is in the boxes. */
+    platform: ['facebook', 'youtube', 'tiktok'].includes(b.platform) ? b.platform : '',
     picture: typeof b.picture === 'string' && b.picture.startsWith('data:image/')
       ? b.picture.slice(0, 300 * 1024)
       : null,
