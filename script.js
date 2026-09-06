@@ -6853,15 +6853,54 @@ if ($("refFile")) {
   });
 }
 
+/* One prompt for a whole 20-30 second script was the wrong shape. These
+   models make about eight seconds at a time, so a single paragraph had to
+   stand in for the entire video and came back vague — and vague prompts are
+   what generic footage is made of. A short video is four or five shots, so
+   ask for four or five prompts. */
 const REF_SCHEMA = {
   type: "object",
   properties: {
     why:    { type: "string" },
     script: { type: "string" },
-    prompt: { type: "string" }
+    prompt: { type: "string" },
+    shots: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          line:    { type: "string" },
+          prompt:  { type: "string" },
+          seconds: { type: "number" }
+        },
+        required: ["line", "prompt"]
+      }
+    }
   },
-  required: ["why", "script", "prompt"]
+  required: ["why", "script", "prompt", "shots"]
 };
+
+/* What a video model actually responds to. Naming the craft — the lens, the
+   light, the movement — is the difference between "a person cooking" and
+   something worth watching twice, and the model will not volunteer any of
+   it unless it is asked for by name. */
+const SHOT_BRIEF =
+  "Each shot prompt must be 60-120 words and name, explicitly:\n" +
+  "- SUBJECT and what it is physically doing, in the present tense, with one concrete " +
+  "detail a stock clip would not have (steam bending, oil beading, flour hanging in the air).\n" +
+  "- SHOT SIZE and LENS: extreme close-up / macro / medium / wide, and a focal length " +
+  "(85mm, 35mm, 24mm) plus depth of field (shallow, f/1.8, background dissolved).\n" +
+  "- CAMERA MOVE: slow push in, rack focus from X to Y, orbit right, locked off, handheld " +
+  "with a slight breath. One move per shot, never two.\n" +
+  "- LIGHT: the source and its direction — hard window light from camera left, warm practical " +
+  "behind, soft overcast, golden hour rim. Name the shadows.\n" +
+  "- COLOUR and TEXTURE: the palette and the surfaces, so the grade is deliberate.\n" +
+  "- PACE: what changes across the shot's few seconds, because footage that does not change " +
+  "is footage people scroll past.\n" +
+  "End every shot prompt with: vertical 9:16, no text, no captions, no watermark, no logos.\n" +
+  "Never describe words appearing on screen — the captions are added here afterwards.\n" +
+  "Shot 1 is the hook: the most arresting image in the whole video, and it must land inside " +
+  "the first second, because that is the only second you are given.";
 
 async function studyReference() {
   const btn = $("btnStudy");
@@ -6900,9 +6939,13 @@ async function studyReference() {
       "the pacing, the shot types, how the captions behave.\n" +
       "\"script\": a spoken script for a 20-30 second vertical video on the user's subject, " +
       "built in the same shape. Spoken words only, no stage directions, no markdown." + inLang + "\n" +
-      "\"prompt\": a single paragraph prompt for a text-to-video model that would produce " +
-      "footage for this script — subject, shot type, camera movement, lighting, mood, pacing. " +
-      "Describe pictures only, never words on screen, because the captions are added here.";
+      "\"shots\": an array of 4 to 6 shots that together cover the whole script, in order. " +
+      "Each has \"line\" (the words from the script spoken over it), \"seconds\" (5 to 8), and " +
+      "\"prompt\" (for a text-to-video model).\n" + SHOT_BRIEF + "\n" +
+      "\"prompt\": the shot 1 prompt again, on its own, for anyone who wants a single clip.\n\n" +
+      "Write like a director briefing a camera operator who cannot see what you can. " +
+      "Be specific about this subject, not about videos in general — a prompt that would " +
+      "work equally well for any topic is a failed prompt.";
 
     setAiClockLabel(btn, refState.mode === "file" ? "Watching it" : "Thinking");
     const raw = await callGeminiApi(prompt, refState.mode === "file" ? refState.file : null, REF_SCHEMA);
@@ -6912,9 +6955,13 @@ async function studyReference() {
 
     $("refWhy").value = out.why || "";
     $("refScript").value = out.script || "";
-    $("refPrompt").value = out.prompt || "";
+    const shots = Array.isArray(out.shots) ? out.shots.filter(s => s && s.prompt) : [];
+    $("refPrompt").value = out.prompt || (shots[0] && shots[0].prompt) || "";
+    renderShots(shots);
     $("refOut").style.display = "";
-    setRefStatus("Done. The script is below — press “Use this script” to send it to step 3.", "ok");
+    setRefStatus(shots.length
+      ? "Done — " + shots.length + " shots below, each its own clip. Shot 1 is the hook."
+      : "Done. The script is below — press “Use this script” to send it to step 3.", "ok");
     stopAiClock(btn, "✅ Written", 2400);
   } catch (e) {
     stopAiClock(btn);
@@ -7471,3 +7518,85 @@ if ($("btnWritePost")) $("btnWritePost").addEventListener("click", writePosts);
     catch (e) { setPostStatus("Couldn't reach the clipboard — select it and copy by hand.", "warn"); }
   });
 });
+
+/* ============================================================
+   The shot list.
+
+   A short video is four or five clips, not one. Each gets its own prompt,
+   its own copy button and its own trip to the video model, and they load
+   into step 1 in order — which is also how you get cuts, and cuts are most
+   of why one video holds attention and another does not.
+   ============================================================ */
+function renderShots(shots) {
+  const box = $("shotList");
+  if (!box) return;
+  box.replaceChildren();
+  if (!shots || !shots.length) { box.style.display = "none"; return; }
+  box.style.display = "";
+
+  shots.forEach((s, i) => {
+    const wrap = document.createElement("div");
+    wrap.style.cssText = "border:1px solid var(--line);border-radius:9px;padding:11px 12px;" +
+                         "margin-top:9px;background:var(--panel-2)";
+
+    const head = document.createElement("div");
+    head.style.cssText = "display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;margin-bottom:7px";
+    const n = document.createElement("b");
+    n.textContent = "Shot " + (i + 1) + (i === 0 ? " · the hook" : "");
+    n.style.cssText = "font-size:12px;color:var(--ivory)";
+    const secs = document.createElement("span");
+    secs.textContent = (s.seconds ? Math.round(s.seconds) + "s" : "");
+    secs.style.cssText = "font-family:var(--mono);font-size:11px;color:var(--ivory-faint)";
+    head.append(n, secs);
+
+    /* The line it sits under, so it is obvious which words this picture is
+       carrying and whether the two actually match. */
+    if (s.line) {
+      const line = document.createElement("div");
+      line.textContent = "“" + s.line + "”";
+      line.style.cssText = "font-size:12px;color:var(--ivory-dim);margin-bottom:7px;font-style:italic";
+      wrap.append(head, line);
+    } else {
+      wrap.append(head);
+    }
+
+    const ta = document.createElement("textarea");
+    ta.className = "txt";
+    ta.rows = 4;
+    ta.value = s.prompt || "";
+    ta.style.cssText = "width:100%;resize:vertical";
+    wrap.appendChild(ta);
+
+    const row = document.createElement("div");
+    row.className = "vo-actions";
+    const copy = document.createElement("button");
+    copy.textContent = "📋 Copy";
+    copy.addEventListener("click", async () => {
+      try { await navigator.clipboard.writeText(ta.value.trim()); setGenStatus("Shot " + (i + 1) + " copied.", "ok"); }
+      catch (e) { setGenStatus("Couldn't reach the clipboard — select it and copy by hand.", "warn"); }
+    });
+    const make = document.createElement("button");
+    make.className = "primary";
+    make.textContent = "🎥 Make this shot";
+    make.addEventListener("click", () => {
+      /* The Veo button reads the main prompt box, so point it at this shot
+         first rather than duplicating the whole filming routine. */
+      $("refPrompt").value = ta.value.trim();
+      generateWithVeo();
+    });
+    row.append(copy, make);
+    wrap.appendChild(row);
+    box.appendChild(wrap);
+  });
+
+  const all = document.createElement("button");
+  all.textContent = "📋 Copy all " + shots.length + " prompts";
+  all.style.cssText = "margin-top:10px";
+  all.addEventListener("click", async () => {
+    const text = [...box.querySelectorAll("textarea")]
+      .map((t, i) => "SHOT " + (i + 1) + "\n" + t.value.trim()).join("\n\n");
+    try { await navigator.clipboard.writeText(text); setGenStatus("All prompts copied.", "ok"); }
+    catch (e) { setGenStatus("Couldn't reach the clipboard.", "warn"); }
+  });
+  box.appendChild(all);
+}

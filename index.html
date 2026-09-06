@@ -173,9 +173,16 @@
           <textarea id="refScript" rows="4" class="txt" style="width:100%;resize:vertical"></textarea>
         </div>
         <div class="field" style="margin-top:9px">
-          <label for="refPrompt">Prompt for the video model</label>
+          <label for="refPrompt">Prompt for the video model <span style="opacity:.7">(shot 1)</span></label>
           <textarea id="refPrompt" rows="4" class="txt" style="width:100%;resize:vertical"></textarea>
         </div>
+
+        <!-- A short video is four or five clips, not one. Each gets its own
+             prompt so the cuts exist, which is most of what holds attention. -->
+        <label style="display:block;font-size:11.5px;color:var(--ivory-dim);margin:14px 0 0">
+          The shot list — one clip each, in order
+        </label>
+        <div id="shotList" style="display:none"></div>
         <div class="vo-actions">
           <button id="btnCopyPrompt">📋 Copy the prompt</button>
           <button id="btnUseScript">Use this script →</button>
