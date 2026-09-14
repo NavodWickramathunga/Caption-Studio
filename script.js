@@ -2227,12 +2227,25 @@ function say(msg, kind) {
 
 function refreshExports() {
   const ok = allTimed();
+  /* A script that was never started is a deliberate choice, not an
+     incomplete one — the video itself should still be downloadable with
+     no captions on it. A script that was started but left half-timed is
+     the only state that blocks anything, and it only blocks the caption
+     files themselves (there is nothing to write) and the video, which
+     would otherwise ship with half its captions missing. */
+  const noScript = S.words.length === 0;
+  const videoOk = S.clips.length > 0 && (ok || noScript) && !S.recording;
+  const captionsOk = ok && !S.recording;
+
   ["expAss", "btnExportAss", "expSrt", "btnExportSrt", "expFbSrt", "btnExportFbSrt",
-   "expJson", "btnExportJson", "expBurn", "btnExportWebm", "btnExportMp4"].forEach(id => {
-    if ($(id)) $(id).disabled = !ok || S.recording;
-  });
+   "expJson", "btnExportJson"].forEach(id => { if ($(id)) $(id).disabled = !captionsOk; });
+  ["expBurn", "btnExportWebm", "btnExportMp4"].forEach(id => { if ($(id)) $(id).disabled = !videoOk; });
+
   if (S.recording) return;
-  if (!S.words.length) { say(""); return; }
+  if (!S.words.length) {
+    say(S.clips.length ? "No script added — the video can still be saved as-is, with no captions." : "");
+    return;
+  }
   if (!ok) {
     const left = S.words.filter(w => w.start === null).length;
     say(left ? left + " word" + (left === 1 ? "" : "s") + " still to tap." : "One more tap on Space closes the last word.");
@@ -2724,7 +2737,9 @@ async function renderMp4() {
 async function exportMp4() {
   if (!CAN_MP4) { say("This browser can't build MP4 files. Use the .webm button instead.", "warn"); return; }
   if (!S.clips.length) { say("Add your clips in step 1 first.", "warn"); return; }
-  if (!allTimed()) { say("Finish the timings in step 4 first.", "warn"); return; }
+  // No script at all is a deliberate choice — plain video, no captions.
+  // Only a script left half-timed blocks the export.
+  if (S.words.length && !allTimed()) { say("Finish the timings in step 4 first.", "warn"); return; }
 
   /* The MP4 is built from decoded audio, and a voice spoken by the browser
      produces no audio to decode — there is no way to read it back. Say that
@@ -3275,6 +3290,7 @@ window.__cs = { S, buildASS, buildSRT, buildJSON, markWord, undoMark, resyncFrom
                 renderMp4, seekElement, gatherExportAudio,
                 seekAll, nowTime, totalTime, moveClip, removeClip,
                 paceStats, pacingReport, showCoachNotes, tightenScript, trimVideoToPace, undoPaceFix,
+                refreshExports, allTimed,
                 get activeClip() { return activeClip; }, set activeClip(v) { activeClip = v; } };
 
 
@@ -4796,21 +4812,21 @@ async function tightenScript(btn) {
     const newWords = out.split(/\s+/).filter(Boolean).length;
     showCoachNotes([pacingReport()].filter(Boolean), false, []);
     stopAiClock(btn, "✅ Script shortened", 2600);
-    say(`Script shortened from ${p.words} to about ${newWords} words. The old word timings no longer ` +
+    sayCoach(`Script shortened from ${p.words} to about ${newWords} words. The old word timings no longer ` +
         `match this text — re-time the words in step 4, then remake the voice. ` +
         `Didn't want that? Press "↺ Undo" above.`, "ok");
   } catch (e) {
     stopAiClock(btn);
-    say("Couldn't tighten the script: " + String((e && e.message) || e), "warn");
+    sayCoach("Couldn't tighten the script: " + String((e && e.message) || e), "warn");
   }
 }
 
 function trimVideoToPace() {
   const p = paceStats();
-  if (!p || !S.clips.length) { say("Load clips and time the words first.", "warn"); return; }
+  if (!p || !S.clips.length) { sayCoach("Load clips and time the words first.", "warn"); return; }
   const idealDur = p.words / PACE_TARGET_WPS;
   const total = totalClipDuration();
-  if (idealDur >= total - 0.05) { say("The clips are already about this length.", "ok"); return; }
+  if (idealDur >= total - 0.05) { sayCoach("The clips are already about this length.", "ok"); return; }
 
   clipsUndo = { clips: S.clips.slice(), durations: S.clips.map(c => c.duration) };
   scriptUndo = null;
@@ -4830,7 +4846,7 @@ function trimVideoToPace() {
   syncTransport();
   showActiveClip();
   showCoachNotes([pacingReport()].filter(Boolean), false, []);
-  say(`Trimmed the clips to ${idealDur.toFixed(1)}s (from ${total.toFixed(1)}s) to match a natural ` +
+  sayCoach(`Trimmed the clips to ${idealDur.toFixed(1)}s (from ${total.toFixed(1)}s) to match a natural ` +
       `reading pace, instead of stretching the voice to fill the old length. ` +
       `Re-time the words in step 4, then remake the voice. ` +
       `Didn't want that? Press "↺ Undo" above.`, "ok");
@@ -4845,7 +4861,7 @@ function undoPaceFix() {
     refreshExports();
     updateSafeZoneWarning();
     showCoachNotes([pacingReport()].filter(Boolean), false, []);
-    say("Restored the previous script.", "ok");
+    sayCoach("Restored the previous script.", "ok");
   } else if (clipsUndo) {
     S.clips = clipsUndo.clips;
     S.clips.forEach((c, i) => { c.duration = clipsUndo.durations[i]; });
@@ -4856,7 +4872,7 @@ function undoPaceFix() {
     syncTransport();
     showActiveClip();
     showCoachNotes([pacingReport()].filter(Boolean), false, []);
-    say("Restored the clips.", "ok");
+    sayCoach("Restored the clips.", "ok");
   }
 }
 
@@ -4937,6 +4953,22 @@ function showCoachNotes(notes, isWarning, gaps) {
     row.appendChild(u);
     box.appendChild(row);
   }
+
+  /* say() writes into #exportStatus, which lives in the Export step — often
+     off-screen from this panel (it sits in Timing). A click here that only
+     changes something far down the page reads as broken, so mirror the
+     result right next to the button that caused it. */
+  const status = document.createElement("div");
+  status.id = "coachActionStatus";
+  status.className = "status";
+  status.style.marginTop = "4px";
+  box.appendChild(status);
+}
+
+function sayCoach(msg, kind) {
+  say(msg, kind);
+  const el = $("coachActionStatus");
+  if (el) { el.textContent = msg; el.className = "status" + (kind ? " " + kind : ""); }
 }
 
 /* ============================================================
