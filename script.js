@@ -118,6 +118,7 @@ function wireClipElement(el) {
   });
   el.addEventListener("loadedmetadata", updateSafeZoneWarning);
   el.addEventListener("loadedmetadata", () => { layoutWmEdit(); wmInvalidate(); });
+  el.addEventListener("loadeddata", updateEnhancePreview);   // first real frame is in, safe to grab now
   el.addEventListener("play", syncTransport);
   el.addEventListener("pause", syncTransport);
   el.addEventListener("ended", closeFinalWord);
@@ -250,6 +251,7 @@ function afterClipsLoaded() {
   syncTransport();
   updateSafeZoneWarning();
   wmSync();
+  updateEnhancePreview();
 }
 
 /* The on-stage element IS whichever clip is current — no copying, no
@@ -2782,6 +2784,259 @@ if ($("outQuality")) {
   updateQualityNote();
 }
 if ($("btnExportMp4")) $("btnExportMp4").addEventListener("click", exportMp4);
+
+/* ============================================================
+   Enhance — sharpen, denoise, color, upscale. No captions, no
+   voiceover, no timing needed: this works on the clips as loaded, for
+   footage that was never going to carry a voice at all.
+
+   Color and denoise are plain CSS filter() functions on the canvas
+   context - cheap, GPU-backed, and what the live preview uses directly
+   so the slider feels instant. Sharpen has no CSS filter() equivalent,
+   so it's a real unsharp-style convolution via the SVG <feConvolveMatrix>
+   defined in index.html, applied only in the final render (a per-pixel
+   convolution redone on every slider tick would not feel instant the
+   same way). Upscaling is exactly what it sounds like: a bigger canvas,
+   not a reconstruction - said plainly in the UI so it is not mistaken
+   for AI upscaling. */
+function encControls() {
+  return {
+    contrast: +($("encContrast") ? $("encContrast").value : 0),
+    saturate: +($("encSaturate") ? $("encSaturate").value : 0),
+    warmth:   +($("encWarmth")   ? $("encWarmth").value   : 0),
+    brightness: +($("encBrightness") ? $("encBrightness").value : 0),
+    sharpen: !!($("encSharpen") && $("encSharpen").checked),
+    denoise: !!($("encDenoise") && $("encDenoise").checked),
+    upscale: +(($("encUpscale") && $("encUpscale").value) || 1)
+  };
+}
+
+function encColorFilterCss(c) {
+  const parts = [
+    `contrast(${100 + c.contrast}%)`,
+    `saturate(${100 + c.saturate}%)`,
+    `brightness(${100 + c.brightness}%)`
+  ];
+  if (c.denoise) parts.push("blur(0.5px)");
+  return parts.join(" ");
+}
+
+/* Paints one enhanced frame from `src` (a video element or a canvas) onto
+   `outCtx` at outW×outH. Two internal canvases: `a` gets the color grade +
+   denoise blur (cheap, one filtered drawImage); `b` gets the sharpen
+   convolution as a second pass, or is skipped when sharpen is off. */
+let encCanvasA = null, encCanvasB = null;
+function drawEnhancedFrame(outCtx, src, outW, outH, c) {
+  if (!encCanvasA) { encCanvasA = document.createElement("canvas"); encCanvasB = document.createElement("canvas"); }
+  [encCanvasA, encCanvasB].forEach(cv => { cv.width = outW; cv.height = outH; });
+  const actx = encCanvasA.getContext("2d");
+  actx.filter = encColorFilterCss(c);
+  actx.drawImage(src, 0, 0, outW, outH);
+  actx.filter = "none";
+
+  if (Math.abs(c.warmth) > 0.5) {
+    const warm = c.warmth > 0;
+    const alpha = Math.min(0.22, Math.abs(c.warmth) / 40 * 0.22);
+    actx.globalCompositeOperation = "overlay";
+    actx.fillStyle = warm ? `rgba(255,150,60,${alpha})` : `rgba(60,140,255,${alpha})`;
+    actx.fillRect(0, 0, outW, outH);
+    actx.globalCompositeOperation = "source-over";
+  }
+
+  if (c.sharpen) {
+    const bctx = encCanvasB.getContext("2d");
+    bctx.filter = "url(#sharpenKernel)";
+    bctx.drawImage(encCanvasA, 0, 0);
+    bctx.filter = "none";
+    outCtx.drawImage(encCanvasB, 0, 0, outW, outH);
+  } else {
+    outCtx.drawImage(encCanvasA, 0, 0, outW, outH);
+  }
+}
+
+function enhanceOutputSize() {
+  const src = sourceSize();
+  const c = encControls();
+  return evenPair(src.w * c.upscale, src.h * c.upscale);
+}
+
+/* The live preview mirrors whatever is already on stage — same clip, same
+   moment — so there is nothing new to load or seek just to see the effect. */
+function updateEnhancePreview() {
+  const canvas = $("enhancePreview");
+  if (!canvas || !video.src || !video.videoWidth) return;
+  const src = sourceSize();
+  const scale = Math.min(1, 480 / Math.max(src.w, src.h));
+  const w = Math.max(2, Math.round(src.w * scale)), h = Math.max(2, Math.round(src.h * scale));
+  canvas.width = w; canvas.height = h;
+  drawEnhancedFrame(canvas.getContext("2d"), video, w, h, encControls());
+}
+
+["encContrast", "encSaturate", "encWarmth", "encBrightness"].forEach(id => {
+  const el = $(id);
+  if (!el) return;
+  el.addEventListener("input", () => {
+    const label = $(id + "Val");
+    if (label) label.textContent = (el.value > 0 ? "+" : "") + el.value + (id === "encWarmth" ? "" : "%");
+    updateEnhancePreview();
+  });
+});
+["encSharpen", "encDenoise", "encUpscale"].forEach(id => {
+  const el = $(id);
+  if (el) el.addEventListener(id === "encUpscale" ? "change" : "input", updateEnhancePreview);
+});
+
+if ($("btnAutoEnhance")) {
+  $("btnAutoEnhance").addEventListener("click", () => {
+    const vals = { encContrast: 8, encSaturate: 18, encWarmth: 6, encBrightness: 2 };
+    Object.entries(vals).forEach(([id, v]) => {
+      $(id).value = v;
+      $(id + "Val").textContent = (v > 0 ? "+" : "") + v + (id === "encWarmth" ? "" : "%");
+    });
+    $("encSharpen").checked = true;
+    $("encDenoise").checked = true;
+    $("encUpscale").value = "1.5";
+    updateEnhancePreview();
+  });
+}
+if ($("btnResetEnhance")) {
+  $("btnResetEnhance").addEventListener("click", () => {
+    ["encContrast", "encSaturate", "encWarmth", "encBrightness"].forEach(id => {
+      $(id).value = 0;
+      $(id + "Val").textContent = "0" + (id === "encWarmth" ? "" : "%");
+    });
+    $("encSharpen").checked = true;
+    $("encDenoise").checked = true;
+    $("encUpscale").value = "1.5";
+    updateEnhancePreview();
+  });
+}
+
+async function exportEnhanced() {
+  const btn = $("btnEnhanceDownload");
+  if (!S.clips.length) { setEnhanceStatus("Add a clip in step 1 first.", "warn"); return; }
+  if (!CAN_MP4) { setEnhanceStatus("This browser can't build MP4 files.", "warn"); return; }
+
+  let { w: W, h: H } = enhanceOutputSize();
+  const FPS = 30, SR = 48000, CH = 1;
+  const dur = totalClipDuration();
+  const frameCount = Math.max(1, Math.round(dur * FPS));
+  const c = encControls();
+
+  startAiClock(btn, "Preparing");
+  try {
+    let codec = await pickH264(W, H, FPS);
+    if (!codec) {
+      // The upscale asked for more than this machine's encoder will take -
+      // fall back toward the source size rather than failing outright.
+      const src = sourceSize();
+      for (const factor of [1.25, 1]) {
+        const step = evenPair(src.w * factor, src.h * factor);
+        codec = await pickH264(step.w, step.h, FPS);
+        if (codec) {
+          W = step.w; H = step.h;
+          setEnhanceStatus(`This browser won't encode the ${enhanceOutputSize().w}×${enhanceOutputSize().h} you asked for, so it's ${W}×${H} instead.`, "warn");
+          break;
+        }
+      }
+    }
+    if (!codec) throw new Error("this browser won't encode H.264 at any size tried");
+
+    setAiClockLabel(btn, "Reading the sound");
+    const pcm = await gatherExportAudio(SR);
+
+    const { Muxer, ArrayBufferTarget } = await getMuxer();
+    const muxer = new Muxer({
+      target: new ArrayBufferTarget(),
+      video: { codec: "avc", width: W, height: H },
+      ...(pcm ? { audio: { codec: "aac", numberOfChannels: CH, sampleRate: SR } } : {}),
+      fastStart: "in-memory"
+    });
+
+    let encErr = null;
+    const venc = new VideoEncoder({ output: (ch, m) => muxer.addVideoChunk(ch, m), error: e => { encErr = e; } });
+    venc.configure({ codec, width: W, height: H, bitrate: bitrateFor(W, H, FPS), framerate: FPS });
+    let aenc = null;
+    if (pcm) {
+      aenc = new AudioEncoder({ output: (ch, m) => muxer.addAudioChunk(ch, m), error: e => { encErr = e; } });
+      aenc.configure({ codec: "mp4a.40.2", numberOfChannels: CH, sampleRate: SR, bitrate: 128000 });
+    }
+
+    const rc = document.createElement("canvas");
+    rc.width = W; rc.height = H;
+    const rctx = rc.getContext("2d", { alpha: false });
+
+    pauseAll();
+    S.clips.forEach(cl => { try { cl.el.pause(); } catch (e) {} });
+
+    for (let i = 0; i < frameCount; i++) {
+      if (encErr) throw encErr;
+      const t = i / FPS;
+      const hit = clipAt(t);
+      if (hit) {
+        await seekElement(hit.clip.el, Math.min(hit.local, Math.max(0, hit.clip.duration - 0.02)));
+        drawEnhancedFrame(rctx, hit.clip.el, W, H, c);
+      } else {
+        rctx.fillStyle = "#000"; rctx.fillRect(0, 0, W, H);
+      }
+      const vf = new VideoFrame(rc, { timestamp: Math.round(i * 1e6 / FPS), duration: Math.round(1e6 / FPS) });
+      venc.encode(vf, { keyFrame: i % 60 === 0 });
+      vf.close();
+      if (venc.encodeQueueSize > 16) await new Promise(r => setTimeout(r, 4));
+      if (i % 5 === 0) {
+        const pct = Math.round((i / frameCount) * 100);
+        setAiClockLabel(btn, "Rendering " + pct + "%");
+        setEnhanceStatus(`Rendering frame ${i + 1} of ${frameCount} — ${pct}%`);
+      }
+    }
+
+    if (pcm && aenc) {
+      setAiClockLabel(btn, "Adding the sound");
+      const CHUNK = 4096;
+      for (let off = 0; off < pcm.length; off += CHUNK) {
+        const n = Math.min(CHUNK, pcm.length - off);
+        const slice = new Float32Array(n);
+        slice.set(pcm.subarray(off, off + n));
+        const ad = new AudioData({
+          format: "f32-planar", sampleRate: SR, numberOfFrames: n,
+          numberOfChannels: CH, timestamp: Math.round(off * 1e6 / SR), data: slice
+        });
+        aenc.encode(ad);
+        ad.close();
+        if (aenc.encodeQueueSize > 16) await new Promise(r => setTimeout(r, 4));
+      }
+    }
+
+    setAiClockLabel(btn, "Finishing");
+    await venc.flush();
+    if (aenc) await aenc.flush();
+    muxer.finalize();
+    try { venc.close(); } catch (e) {}
+    try { if (aenc) aenc.close(); } catch (e) {}
+    if (encErr) throw encErr;
+
+    const blob = new Blob([muxer.target.buffer], { type: "video/mp4" });
+    if (!(await opensCleanly(blob))) throw new Error("the finished file would not open");
+    download(baseName() + "-enhanced.mp4", blob);
+    setEnhanceStatus(`Saved ${baseName()}-enhanced.mp4 — ${W}×${H}, ${(frameCount / FPS).toFixed(1)}s, ` +
+      `${(blob.size / 1048576).toFixed(1)} MB${pcm ? ", with sound." : ", silent — no sound in the clips."}`, "ok");
+    stopAiClock(btn, "✅ Saved", 2600);
+  } catch (e) {
+    stopAiClock(btn);
+    setEnhanceStatus("Couldn't render it: " + String((e && e.message) || e), "warn");
+  } finally {
+    pauseAll();
+  }
+}
+
+function setEnhanceStatus(msg, kind) {
+  const el = $("enhanceStatus");
+  if (!el) return;
+  el.className = "status" + (kind ? " " + kind : "");
+  el.textContent = msg;
+}
+
+if ($("btnEnhanceDownload")) $("btnEnhanceDownload").addEventListener("click", exportEnhanced);
 
 /* ============================================================
    Burn-in recorder
