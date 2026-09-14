@@ -204,6 +204,7 @@ const activeEl = () => S.clips.length ? S.clips[activeClip].el : video;
 function loadClipFiles(files) {
   const list = Array.from(files || []);
   if (!list.length) return;
+  clipsUndo = null;   // the clip list just changed under it - trimVideoToPace's undo no longer applies
   let pending = list.length;
 
   list.forEach(f => {
@@ -219,6 +220,7 @@ function loadClipFiles(files) {
     S.clips.push(clip);
     el.addEventListener("loadedmetadata", () => {
       clip.duration = playableLength(el);
+      clip.fullDuration = clip.duration;   // the real length, in case trimVideoToPace shortens .duration
       if (--pending === 0) afterClipsLoaded();
       recomputeClipStarts();
       renderClipList();
@@ -274,6 +276,7 @@ function showActiveClip() {
 function removeClip(i) {
   const c = S.clips[i];
   if (!c) return;
+  clipsUndo = null;   // the clip list just changed under it - trimVideoToPace's undo no longer applies
   try { URL.revokeObjectURL(c.url); } catch (e) {}
   c.el.remove();
   S.clips.splice(i, 1);
@@ -861,6 +864,7 @@ function syncTransport() {
 const scriptEl = $("script");
 let parseTimer = null;
 scriptEl.addEventListener("input", () => {
+  scriptUndo = null;   // typed over by hand - the tighten-script undo no longer applies
   clearTimeout(parseTimer);
   parseTimer = setTimeout(parseScript, 220);
 });
@@ -3015,6 +3019,7 @@ window.__cs = { S, buildASS, buildSRT, buildJSON, markWord, undoMark, resyncFrom
                 autoFit, FIT_TOLERANCE, exportMp4, CAN_MP4, pickH264, outputSize,
                 renderMp4, seekElement, gatherExportAudio,
                 seekAll, nowTime, totalTime, moveClip, removeClip,
+                paceStats, pacingReport, showCoachNotes, tightenScript, trimVideoToPace, undoPaceFix,
                 get activeClip() { return activeClip; }, set activeClip(v) { activeClip = v; } };
 
 
@@ -3445,16 +3450,25 @@ function describeDeadAir(gaps) {
     : gaps.length + " silent gaps, " + total.toFixed(1) + "s in total. Longest: " + one + ".";
 }
 
+/* Target for the two pace fixes below: mid-point of the "good for
+   short-form" band pacingReport() checks against. */
+const PACE_TARGET_WPS = 2.8;
+
+function paceStats() {
+  const w = S.words.filter(x => x.start !== null && x.end !== null);
+  if (w.length < 3) return null;
+  const span = w[w.length - 1].end - w[0].start;
+  if (span <= 0) return null;
+  return { words: w.length, span, wps: w.length / span };
+}
+
 /* Words per second, so slow stretches are visible before you post. */
 function pacingReport() {
-  const w = S.words.filter(x => x.start !== null && x.end !== null);
-  if (w.length < 3) return "";
-  const span = w[w.length - 1].end - w[0].start;
-  if (span <= 0) return "";
-  const wps = w.length / span;
-  if (wps < 2.0) return `Pace is ${wps.toFixed(1)} words/sec — slow for a Reel. Try speeding the voice up.`;
-  if (wps > 4.5) return `Pace is ${wps.toFixed(1)} words/sec — very fast; captions may be hard to read.`;
-  return `Pace is ${wps.toFixed(1)} words/sec — good for short-form.`;
+  const p = paceStats();
+  if (!p) return "";
+  if (p.wps < 2.0) return `Pace is ${p.wps.toFixed(1)} words/sec — slow for a Reel. Try speeding the voice up.`;
+  if (p.wps > 4.5) return `Pace is ${p.wps.toFixed(1)} words/sec — very fast; captions may be hard to read.`;
+  return `Pace is ${p.wps.toFixed(1)} words/sec — good for short-form.`;
 }
 
 /* ============================================================
@@ -4490,6 +4504,107 @@ async function cutDeadAir(btn) {
   }
 }
 
+/* ============================================================
+   Two ways to fix a pace that reads too slowly for a Reel.
+
+   Speaking the voice faster does not work on its own: makeVoiceFile()
+   stretches whatever comes back to match the video's length, so a
+   faster reading just gets stretched right back out to fill the same
+   time. Words/sec only actually changes if the word count or the video
+   length changes - so that is what these two buttons touch, not the
+   voice. Each keeps one level of undo, since neither is something to
+   apply blind.
+   ============================================================ */
+let scriptUndo = null;   // { text } - the script as it was before tightenScript()
+let clipsUndo = null;    // { clips, durations } - the clip list as it was before trimVideoToPace()
+
+async function tightenScript(btn) {
+  const text = scriptEl.value.trim();
+  const p = paceStats();
+  if (!text || !p) return;
+  const targetWords = Math.max(3, Math.round(PACE_TARGET_WPS * p.span));
+  startAiClock(btn, "Tightening the script");
+  try {
+    const prompt = `Rewrite this short-form video script to be shorter - as read, it comes out too ` +
+      `slow for the footage (about ${p.words} words over ${p.span.toFixed(1)}s; aim for close to ` +
+      `${targetWords} words instead). Keep the same message, voice and tone. ` +
+      `Return ONLY the rewritten script - no preamble, no quotes, no notes.\n\n${text}`;
+    const out = String(await callGeminiApi(prompt)).trim();
+    if (!out) throw new Error("came back empty");
+    scriptUndo = { text: scriptEl.value };
+    clipsUndo = null;
+    scriptEl.value = out;
+    parseScript();
+    renderChips();
+    refreshExports();
+    updateSafeZoneWarning();
+    const newWords = out.split(/\s+/).filter(Boolean).length;
+    showCoachNotes([pacingReport()].filter(Boolean), false, []);
+    stopAiClock(btn, "✅ Script shortened", 2600);
+    say(`Script shortened from ${p.words} to about ${newWords} words. The old word timings no longer ` +
+        `match this text — re-time the words in step 4, then remake the voice. ` +
+        `Didn't want that? Press "↺ Undo" above.`, "ok");
+  } catch (e) {
+    stopAiClock(btn);
+    say("Couldn't tighten the script: " + String((e && e.message) || e), "warn");
+  }
+}
+
+function trimVideoToPace() {
+  const p = paceStats();
+  if (!p || !S.clips.length) { say("Load clips and time the words first.", "warn"); return; }
+  const idealDur = p.words / PACE_TARGET_WPS;
+  const total = totalClipDuration();
+  if (idealDur >= total - 0.05) { say("The clips are already about this length.", "ok"); return; }
+
+  clipsUndo = { clips: S.clips.slice(), durations: S.clips.map(c => c.duration) };
+  scriptUndo = null;
+
+  let remaining = idealDur;
+  const kept = [];
+  S.clips.forEach(c => {
+    if (remaining <= 0.02) return;      // past the target - drop this clip entirely
+    c.duration = Math.min(c.fullDuration != null ? c.fullDuration : c.duration, remaining);
+    remaining -= c.duration;
+    kept.push(c);
+  });
+  S.clips = kept;
+  if (activeClip >= S.clips.length) activeClip = Math.max(0, S.clips.length - 1);
+  recomputeClipStarts();
+  renderClipList();
+  syncTransport();
+  showActiveClip();
+  showCoachNotes([pacingReport()].filter(Boolean), false, []);
+  say(`Trimmed the clips to ${idealDur.toFixed(1)}s (from ${total.toFixed(1)}s) to match a natural ` +
+      `reading pace, instead of stretching the voice to fill the old length. ` +
+      `Re-time the words in step 4, then remake the voice. ` +
+      `Didn't want that? Press "↺ Undo" above.`, "ok");
+}
+
+function undoPaceFix() {
+  if (scriptUndo) {
+    scriptEl.value = scriptUndo.text;
+    scriptUndo = null;
+    parseScript();
+    renderChips();
+    refreshExports();
+    updateSafeZoneWarning();
+    showCoachNotes([pacingReport()].filter(Boolean), false, []);
+    say("Restored the previous script.", "ok");
+  } else if (clipsUndo) {
+    S.clips = clipsUndo.clips;
+    S.clips.forEach((c, i) => { c.duration = clipsUndo.durations[i]; });
+    clipsUndo = null;
+    activeClip = Math.min(activeClip, S.clips.length - 1);
+    recomputeClipStarts();
+    renderClipList();
+    syncTransport();
+    showActiveClip();
+    showCoachNotes([pacingReport()].filter(Boolean), false, []);
+    say("Restored the clips.", "ok");
+  }
+}
+
 function showCoachNotes(notes, isWarning, gaps) {
   const box = $("coachNotes");
   if (!box) return;
@@ -4525,6 +4640,46 @@ function showCoachNotes(notes, isWarning, gaps) {
     b.title = "Removes the silent gaps from your voiceover, then times the words to what is left.";
     b.addEventListener("click", () => cutDeadAir(b));
     row.appendChild(b);
+    box.appendChild(row);
+  }
+
+  /* Same idea for a slow pace: two honest fixes, since speeding the voice up
+     alone gets undone by makeVoiceFile()'s fit-to-video stretch (see the
+     comment above tightenScript). Only offered for "too slow" - "too fast"
+     has no equally safe one-click answer. */
+  const slow = notes.some(n => /Pace is .* slow for a Reel/i.test(n));
+  if (slow) {
+    const row = document.createElement("div");
+    row.style.cssText = "margin-top:4px;display:flex;gap:6px;flex-wrap:wrap";
+
+    const tighten = document.createElement("button");
+    tighten.className = "primary";
+    tighten.style.cssText = "font-size:11.5px;padding:5px 11px;border-radius:6px;cursor:pointer";
+    tighten.textContent = "✂ Shorten the script";
+    tighten.title = "Asks Gemini to rewrite the script shorter, so the same video reads at a natural pace.";
+    tighten.addEventListener("click", () => tightenScript(tighten));
+    row.appendChild(tighten);
+
+    const trim = document.createElement("button");
+    trim.style.cssText = "font-size:11.5px;padding:5px 11px;border-radius:6px;cursor:pointer";
+    trim.textContent = "✂ Trim the video";
+    trim.title = "Shortens your clips from the end to match how long the script naturally takes to read.";
+    trim.addEventListener("click", () => trimVideoToPace());
+    row.appendChild(trim);
+
+    box.appendChild(row);
+  }
+
+  if (scriptUndo || clipsUndo) {
+    const row = document.createElement("div");
+    row.style.cssText = "margin-top:4px";
+    const u = document.createElement("button");
+    u.style.cssText = "font-size:11.5px;padding:5px 11px;border-radius:6px;cursor:pointer";
+    u.textContent = "↺ Undo";
+    u.title = scriptUndo ? "Restore the script as it was before it was shortened."
+                         : "Restore the clips as they were before they were trimmed.";
+    u.addEventListener("click", undoPaceFix);
+    row.appendChild(u);
     box.appendChild(row);
   }
 }
