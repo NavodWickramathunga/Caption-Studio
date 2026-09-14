@@ -96,8 +96,41 @@ function captionCase(text) {
 }
 
 const $ = id => document.getElementById(id);
-const video = $("video"), audio = $("audio"), overlay = $("overlay");
+const placeholderVideo = $("video"), audio = $("audio"), overlay = $("overlay");
+const frameEl = document.querySelector(".frame");
+/* `video` always points at whichever element is actually on screen right
+   now — the empty placeholder until a clip loads, then a clip's own element
+   (see "Several clips, one timeline" below). Everything downstream reads
+   this variable, so a clip switch is just reassigning it. */
+let video = placeholderVideo;
 const octx = overlay.getContext("2d");
+
+/* The handlers a video element needs for as long as it might be the active
+   one — attached once per element (placeholder here, each clip's own
+   element in loadClipFiles) rather than once to a single reused node,
+   since every clip keeps its own <video> now. */
+function wireClipElement(el) {
+  el.addEventListener("loadedmetadata", () => {
+    const { w, h } = previewSize();
+    overlay.width = w;
+    overlay.height = h;
+    syncTransport();
+  });
+  el.addEventListener("loadedmetadata", updateSafeZoneWarning);
+  el.addEventListener("loadedmetadata", () => { layoutWmEdit(); wmInvalidate(); });
+  el.addEventListener("play", syncTransport);
+  el.addEventListener("pause", syncTransport);
+  el.addEventListener("ended", closeFinalWord);
+}
+
+/* Every clip keeps its own element now, so muting "the video" means muting
+   all of them — the ones not on screen yet need the right state already
+   set for the moment they become active, not just whichever one happens
+   to be showing right now. */
+function setAllClipsMuted(m) {
+  video.muted = m;
+  S.clips.forEach(c => { c.el.muted = m; });
+}
 
 /* ============================================================
    Media loading + A/V sync
@@ -178,8 +211,10 @@ function loadClipFiles(files) {
     const el = document.createElement("video");
     el.preload = "auto";
     el.playsInline = true;
+    el.muted = video.muted;   // match whatever the timeline currently expects
     el.src = url;
     clipEls.appendChild(el);
+    wireClipElement(el);
     const clip = { file: f, url, el, duration: 0, start: 0, name: f.name };
     S.clips.push(clip);
     el.addEventListener("loadedmetadata", () => {
@@ -215,12 +250,24 @@ function afterClipsLoaded() {
   wmSync();
 }
 
-/* The on-stage <video> mirrors whichever clip is current, so the preview
-   keeps working exactly as it did with a single file. */
+/* The on-stage element IS whichever clip is current — no copying, no
+   reload. Each clip has kept its own preloaded <video> since the moment it
+   was added (see loadClipFiles), so switching is just moving that already-
+   ready element into view and pointing `video` at it. This is what closed
+   the gap that let the picture fall behind the voiceover at every clip
+   boundary: the old version copied the clip's URL into a single shared
+   element and called .load(), which re-decodes from scratch every time. */
 function showActiveClip() {
   const c = S.clips[activeClip];
   if (!c) return;
-  if (video.src !== c.url) { video.src = c.url; video.load(); }
+  if (video !== c.el) {
+    if (video.isConnected) clipEls.appendChild(video);   // park the old one, still fully loaded
+    frameEl.appendChild(c.el);
+    video = c.el;
+    // Only matters once a .webm recording has actually built the shared
+    // graph (see stableAudioTrack) — a no-op the rest of the time.
+    connectToSharedAudioGraph(video);
+  }
   wmSync();
 }
 
@@ -233,6 +280,7 @@ function removeClip(i) {
   recomputeClipStarts();
   activeClip = Math.min(activeClip, Math.max(0, S.clips.length - 1));
   if (!S.clips.length) {
+    if (video !== placeholderVideo) { frameEl.appendChild(placeholderVideo); video = placeholderVideo; }
     video.removeAttribute("src"); video.load();
     $("stageEmpty").style.display = "";
   } else showActiveClip();
@@ -442,7 +490,7 @@ $("audioFile").addEventListener("change", e => {
       `That's ${NOT_AUDIO[ext]}, not a voiceover — this needs an audio file (MP3, WAV, M4A) or a video.`;
     $("audioName").classList.add("none");
     e.target.value = "";
-    S.hasAudio = false; S.voiceoverBlob = null; video.muted = false;
+    S.hasAudio = false; S.voiceoverBlob = null; setAllClipsMuted(false);
     syncTransport();
     return;
   }
@@ -458,8 +506,7 @@ function useVoiceover(blob, name) {
   if (audioURL) URL.revokeObjectURL(audioURL);
   audioURL = URL.createObjectURL(blob);
   audio.src = audioURL; audio.load();
-  S.hasAudio = true; video.muted = true;
-  S.clips.forEach(c => { c.el.muted = true; });
+  S.hasAudio = true; setAllClipsMuted(true);
   S.audioFileName = name;
   S.voiceoverBlob = blob;       // the exporters decode this, not the file input
   $("audioName").textContent = name;
@@ -472,7 +519,7 @@ $("clearAudio").addEventListener("click", () => {
   pauseAll();
   if (audioURL) { URL.revokeObjectURL(audioURL); audioURL = null; }
   audio.removeAttribute("src"); audio.load();
-  S.hasAudio = false; video.muted = false;
+  S.hasAudio = false; setAllClipsMuted(false);
   S.voiceoverBlob = null;
   $("audioFile").value = "";
   $("audioName").textContent = "using the video's own audio";
@@ -757,17 +804,7 @@ function drawClipFitted(ctx, el, W, H) {
   repairWatermarks(ctx, el, dx, dy, dw, dh);
 }
 
-video.addEventListener("loadedmetadata", () => {
-  /* The preview is drawn every frame and displayed a few hundred pixels wide,
-     so it does not follow the export up to 4K — that would be eight million
-     pixels of canvas redrawn continuously to look identical. Everything about
-     a caption is a percentage of the frame, so a smaller preview is the same
-     picture, and the export still renders at whatever was chosen. */
-  const { w, h } = previewSize();
-  overlay.width = w;
-  overlay.height = h;
-  syncTransport();
-});
+wireClipElement(placeholderVideo);
 audio.addEventListener("loadedmetadata", () => {
   // A video file loaded here contributes its sound only. If it carries no
   // audio track at all there is nothing to use, so say so plainly.
@@ -798,14 +835,11 @@ audio.addEventListener("error", () => {
     : "Couldn't read any sound from that file — this needs an audio file (MP3, WAV, M4A) or a video.";
   el.classList.add("none");
   S.hasAudio = false;
-  video.muted = false;
+  setAllClipsMuted(false);
   syncTransport();
 });
-[video, audio].forEach(el => {
-  el.addEventListener("play", syncTransport);
-  el.addEventListener("pause", syncTransport);
-});
-video.addEventListener("ended", closeFinalWord);
+audio.addEventListener("play", syncTransport);
+audio.addEventListener("pause", syncTransport);
 audio.addEventListener("ended", closeFinalWord);
 
 function syncTransport() {
@@ -1124,8 +1158,7 @@ function setMode(mode) {
   });
   if (mode !== "generated") stopSpeaking();
   // Only mute the clip when something else is providing the voice.
-  video.muted = (mode === "file" && S.hasAudio);
-  S.clips.forEach(c => { c.el.muted = video.muted; });
+  setAllClipsMuted(mode === "file" && S.hasAudio);
 
   // Say which voice the timing button will listen to, so the two paths
   // read as one choice rather than two competing buttons.
@@ -1350,7 +1383,7 @@ function stopSpeaking() {
   if (TTS.speaking || TTS.pending) TTS.cancel();
   utter = null; speakRun = null;
   video.pause();
-  video.muted = (S.voMode === "file" && S.hasAudio);
+  setAllClipsMuted(S.voMode === "file" && S.hasAudio);
   $("speakStop").disabled = true;
   $("voStatus").classList.remove("speaking");
 }
@@ -2858,7 +2891,7 @@ async function burnIn() {
     if (speaking) stopSpeaking();
     S.recording = false;
     pauseAll();
-    video.muted = (S.voMode === "file" && S.hasAudio);
+    setAllClipsMuted(S.voMode === "file" && S.hasAudio);
 
     // How long the recording actually ran, which is what players need told.
     const recorded = (performance.now() - recStart) / 1000;
@@ -4192,7 +4225,7 @@ if ($("ctaOn")) {
 ["pos", "size", "wps"].forEach(id => {
   if ($(id)) $(id).addEventListener("input", updateSafeZoneWarning);
 });
-video.addEventListener("loadedmetadata", updateSafeZoneWarning);
+// (loadedmetadata → updateSafeZoneWarning is wired per element in wireClipElement)
 
 /* ============================================================
    Write the captions from the voice itself.
@@ -4503,29 +4536,40 @@ function showCoachNotes(notes, isWarning, gaps) {
    how a render comes back mute despite everything "working". So measure
    the real level rather than trusting the track's presence.
    ============================================================ */
-/* A recordable audio track for a media element.
+/* A recordable audio track that survives a clip change.
 
-   createMediaElementSource can only be called once per element, and the
-   visible <video> changes source every time a clip ends - so build the
-   graph once and keep it. The element is also reconnected to the speakers,
-   because routing it through Web Audio otherwise silences playback. */
-const audioGraphs = new WeakMap();
+   createMediaElementSource can only be called once per element, and each
+   clip now keeps its own element (rather than one shared <video> whose src
+   was swapped) - so every clip's output is routed into the SAME
+   destination, one source node per element, rather than building a fresh
+   context and destination per clip. Without this, only the clip active
+   when recording started would ever reach the recorded stream; every clip
+   after it would record silence. The element is also reconnected to the
+   speakers, because routing it through Web Audio otherwise silences
+   playback. */
+let sharedAudioGraph = null;              // { ac, dest } - one per page life
+const audioGraphSources = new WeakMap();  // el -> the source node already wired into it
+
+function connectToSharedAudioGraph(el) {
+  if (!sharedAudioGraph || !el || audioGraphSources.has(el)) return;
+  try {
+    const src = sharedAudioGraph.ac.createMediaElementSource(el);
+    src.connect(sharedAudioGraph.dest);
+    src.connect(sharedAudioGraph.ac.destination);   // keep it audible while recording
+    audioGraphSources.set(el, src);
+  } catch (e) {}
+}
 
 function stableAudioTrack(el) {
   const AC = window.AudioContext || window.webkitAudioContext;
   if (!AC || !el) return null;
-  let g = audioGraphs.get(el);
-  if (!g) {
+  if (!sharedAudioGraph) {
     const ac = new AC();
-    const src = ac.createMediaElementSource(el);
-    const dest = ac.createMediaStreamDestination();
-    src.connect(dest);
-    src.connect(ac.destination);          // keep it audible while recording
-    g = { ac, dest };
-    audioGraphs.set(el, g);
+    sharedAudioGraph = { ac, dest: ac.createMediaStreamDestination() };
   }
-  if (g.ac.state === "suspended") g.ac.resume().catch(() => {});
-  const tracks = g.dest.stream.getAudioTracks();
+  connectToSharedAudioGraph(el);
+  if (sharedAudioGraph.ac.state === "suspended") sharedAudioGraph.ac.resume().catch(() => {});
+  const tracks = sharedAudioGraph.dest.stream.getAudioTracks();
   return tracks.length ? tracks[0] : null;
 }
 
@@ -7126,7 +7170,7 @@ async function findWatermarks() {
      again whenever the frame changes size or a clip of a different shape
      loads. */
   window.addEventListener("resize", layoutWmEdit);
-  video.addEventListener("loadedmetadata", () => { layoutWmEdit(); wmInvalidate(); });
+  // (loadedmetadata → layoutWmEdit/wmInvalidate is wired per element in wireClipElement)
   if (window.ResizeObserver) {
     const frame = document.querySelector(".frame");
     if (frame) new ResizeObserver(layoutWmEdit).observe(frame);
