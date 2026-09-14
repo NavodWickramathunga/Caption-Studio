@@ -1907,6 +1907,21 @@ function updateSafeZoneWarning() {
    over the last frame, exactly as the export draws it. */
 let cardPreviewFrom = null;
 
+/* Keep the on-screen clip in step with the voiceover clock. audio.currentTime
+   is a position on the whole JOINED timeline, but video.currentTime is local
+   to whichever clip element happens to be loaded right now — comparing them
+   directly only ever made sense for the first clip. From clip 2 onward the
+   comparison was between unrelated numbers, so the "audio.currentTime <=
+   video.duration" guard was almost always false and drift from the clip-swap
+   load delay in advanceClipIfEnded() never got pulled back. */
+function syncVideoToAudio() {
+  if (!(S.hasAudio && audio.src && !audio.paused && isFinite(video.duration))) return;
+  const c = S.clips[activeClip];
+  const target = c ? Math.max(0, Math.min(video.duration, audio.currentTime - c.start))
+                    : Math.min(video.duration, audio.currentTime);
+  if (Math.abs(video.currentTime - target) > 0.12) video.currentTime = target;
+}
+
 function frameLoop() {
   const W = overlay.width, H = overlay.height;
   octx.clearRect(0, 0, W, H);
@@ -1914,12 +1929,7 @@ function frameLoop() {
   if (!video.paused) advanceClipIfEnded();
   paintWatermarkLayer();
   if (video.src) {
-    // keep the two elements from drifting apart
-    if (S.hasAudio && audio.src && !audio.paused && isFinite(video.duration)) {
-      if (Math.abs(video.currentTime - audio.currentTime) > 0.12 && audio.currentTime <= video.duration) {
-        video.currentTime = audio.currentTime;
-      }
-    }
+    syncVideoToAudio();  // keep the two elements from drifting apart
     drawCaptions(octx, W, H, nowTime());
     drawCta(octx, W, H, nowTime());
     $("tNow").textContent = fmtClock(nowTime());
@@ -2906,6 +2916,7 @@ async function burnIn() {
   const tick = () => {
     if (levelMeter) levelMeter.sample();
     advanceClipIfEnded();               // roll into the next clip mid-recording
+    syncVideoToAudio();                 // pull the picture back in step with the voice
     const t = nowTime();
 
     /* A file that overstates its length simply stops advancing, and waiting
