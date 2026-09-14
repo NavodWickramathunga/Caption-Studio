@@ -7,14 +7,25 @@
 <link href="https://fonts.googleapis.com/css2?family=Anton&family=JetBrains+Mono:wght@400;600&family=Inter:wght@400;500;600&family=Noto+Sans+Sinhala:wght@700&family=Noto+Sans+Tamil:wght@700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="style.css">
 
-<!-- Referenced from script.js as ctx.filter = "url(#sharpenKernel)" when the
-     Enhance step's sharpen toggle is on. feConvolveMatrix does a real
-     unsharp-style convolution, which plain CSS filter() functions have no
-     equivalent for. -->
+<!-- The two parts of the Enhance step that plain CSS filter() functions cannot
+     express: warmth (a colour matrix) and sharpen (a real convolution).
+
+     Both live in ONE filter, and each is written as a no-op identity when its
+     control is off, so the reference is always just url(#encChain) — a single
+     valid filter in every context. That matters because the exact same string
+     is used two ways: as a CSS filter on the <video> on stage (the live
+     preview) and as ctx.filter on the export canvas. One definition, so what
+     you watch is what gets rendered.
+
+     color-interpolation-filters="sRGB" because the SVG default of linearRGB
+     would grade and sharpen in a different space than the CSS filter functions
+     alongside it, and the two halves of the chain would not agree. -->
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
-  <filter id="sharpenKernel">
-    <feConvolveMatrix order="3" preserveAlpha="true"
-      kernelMatrix="0 -1 0  -1 5 -1  0 -1 0"></feConvolveMatrix>
+  <filter id="encChain" color-interpolation-filters="sRGB">
+    <feColorMatrix id="encWarmMatrix" type="matrix"
+      values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 1 0"></feColorMatrix>
+    <feConvolveMatrix id="encSharpMatrix" order="3" preserveAlpha="true"
+      kernelMatrix="0 0 0  0 1 0  0 0 0"></feConvolveMatrix>
   </filter>
 </svg>
 
@@ -506,9 +517,17 @@
         </div>
       </div>
 
-      <label class="chk"><input type="checkbox" id="encSharpen" checked> Sharpen</label>
+      <label class="chk"><input type="checkbox" id="encSharpen"> Sharpen</label>
       <label class="chk" style="margin-left:14px">
-        <input type="checkbox" id="encDenoise" checked> Reduce grain / noise
+        <input type="checkbox" id="encDenoise"> Reduce grain / noise
+      </label>
+
+      <!-- Without this the step was a dead end: you could grade a clip, watch
+           the thumbnail change, and still get the untouched footage in the
+           preview and in the MP4. -->
+      <label class="chk" style="display:flex;margin-top:9px">
+        <input type="checkbox" id="encApply" checked>
+        Use this everywhere — the preview, “Preview the final cut”, and the step 5 export
       </label>
 
       <div class="field" style="margin-top:10px;max-width:220px">
@@ -523,11 +542,17 @@
       <p class="hint" style="margin:6px 0 0;font-size:11.5px">
         Upscaling makes the picture bigger, not sharper on its own — sharpen and denoise above are
         what do the actual quality work. This is filtering, not AI reconstruction.
+        Output size applies to the “Enhance &amp; download” button below; the step 5 export uses its
+        own Video quality setting.
       </p>
 
       <div class="vo-actions" style="margin-top:14px">
         <button id="btnEnhanceDownload" class="primary">⬇ Enhance &amp; download</button>
       </div>
+      <p class="hint" style="margin:8px 0 0;font-size:11.5px">
+        That button saves the picture on its own — no captions, sticker or end card. To keep those,
+        leave the box above ticked and export from step 5 as usual.
+      </p>
       <div class="status" id="enhanceStatus" role="status" aria-live="polite"></div>
     </section>
 

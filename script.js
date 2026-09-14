@@ -251,7 +251,7 @@ function afterClipsLoaded() {
   syncTransport();
   updateSafeZoneWarning();
   wmSync();
-  updateEnhancePreview();
+  refreshEncFilter();   // new elements need the stage filter, not just the thumbnail
 }
 
 /* The on-stage element IS whichever clip is current — no copying, no
@@ -802,7 +802,23 @@ function drawClipFitted(ctx, el, W, H) {
   const dw = vw * scale, dh = vh * scale;
   if (dw < W || dh < H) { ctx.fillStyle = "#000"; ctx.fillRect(0, 0, W, H); }
   const dx = (W - dw) / 2, dy = (H - dh) / 2;
-  ctx.drawImage(el, dx, dy, dw, dh);
+  /* Every export draws its picture through here, so this is the one place
+     the Enhance step has to reach to be in the MP4 and the .webm both. It
+     covers only the footage: captions, sticker and end card are drawn by
+     their own calls afterwards and should not be graded or sharpened. */
+  const enc = encFilterCache;
+  if (enc === "none") {
+    ctx.drawImage(el, dx, dy, dw, dh);
+  } else {
+    const graded = encGlRender(el, Math.max(2, Math.round(dw)), Math.max(2, Math.round(dh)), encParamsCache);
+    if (graded) {
+      ctx.drawImage(graded, dx, dy, dw, dh);
+    } else {
+      ctx.filter = enc;             // no WebGL here: correct, just slow
+      ctx.drawImage(el, dx, dy, dw, dh);
+      ctx.filter = "none";
+    }
+  }
   /* Anything burned into the footage is repaired here, on the frame that was
      just drawn, so the export and the screen recorder both get it without
      either of them knowing the feature exists. */
@@ -2822,51 +2838,215 @@ function encControls() {
     brightness: +($("encBrightness") ? $("encBrightness").value : 0),
     sharpen: !!($("encSharpen") && $("encSharpen").checked),
     denoise: !!($("encDenoise") && $("encDenoise").checked),
+    apply: !!($("encApply") && $("encApply").checked),
     upscale: +(($("encUpscale") && $("encUpscale").value) || 1)
   };
 }
 
-function encColorFilterCss(c) {
-  const parts = [
-    `contrast(${100 + c.contrast}%)`,
-    `saturate(${100 + c.saturate}%)`,
-    `brightness(${100 + c.brightness}%)`
-  ];
-  if (c.denoise) parts.push("blur(0.5px)");
-  return parts.join(" ");
+/* Warmth and sharpen live in the one SVG filter declared in index.html.
+   Each is written as an identity when its control is off, so the chain is
+   always referenceable as a single url(#encChain). */
+function syncEncSvgFilter(c) {
+  const wm = $("encWarmMatrix"), sm = $("encSharpMatrix");
+  if (wm) {
+    const w = (c.warmth / 40) * 0.18;     // warm lifts red and drops blue
+    wm.setAttribute("values",
+      `${(1 + w).toFixed(4)} 0 0 0 0  0 1 0 0 0  0 0 ${(1 - w).toFixed(4)} 0 0  0 0 0 1 0`);
+  }
+  if (sm) {
+    sm.setAttribute("kernelMatrix",
+      c.sharpen ? "0 -1 0  -1 5 -1  0 -1 0" : "0 0 0  0 1 0  0 0 0");
+  }
 }
 
-/* Paints one enhanced frame from `src` (a video element or a canvas) onto
-   `outCtx` at outW×outH. Two internal canvases: `a` gets the color grade +
-   denoise blur (cheap, one filtered drawImage); `b` gets the sharpen
-   convolution as a second pass, or is skipped when sharpen is off. */
-let encCanvasA = null, encCanvasB = null;
+/* The whole look as one filter string. Neutral controls return "none" so
+   nothing pays for a filter it isn't using — and so a session that never
+   opens this step renders byte-for-byte what it always did.
+
+   Order is deliberate and mirrored exactly by the shader below: blur,
+   then the warmth/sharpen chain, then the three colour functions. */
+function buildEncFilterString(c) {
+  const parts = [];
+  if (c.denoise)    parts.push("blur(0.5px)");
+  if (c.sharpen || Math.abs(c.warmth) > 0.5) parts.push("url(#encChain)");
+  if (c.contrast)   parts.push(`contrast(${100 + c.contrast}%)`);
+  if (c.saturate)   parts.push(`saturate(${100 + c.saturate}%)`);
+  if (c.brightness) parts.push(`brightness(${100 + c.brightness}%)`);
+  return parts.length ? parts.join(" ") : "none";
+}
+
+/* ------------------------------------------------------------
+   The same grade again, as a GPU shader — because ctx.filter cannot
+   carry this.
+
+   Measured at 1080×1920 on the export canvas: no filter 13ms a frame,
+   CSS colour functions 113ms, and a url() reference to the SVG chain
+   2100ms. That last one is not a typo — canvas drops to a software path
+   for referenced filters, and it turns a thirty-second clip into a
+   half-hour render. The live preview is fine on CSS because that runs
+   through the compositor on a <video> element, never through canvas.
+
+   So: the stage previews with CSS, every canvas render goes through here,
+   and the two agree because the maths below is the same maths, in the same
+   order. contrast/saturate/brightness use the exact formulas CSS defines
+   (Rec.709 luma for saturate); sharpen is exactly the feConvolveMatrix
+   kernel, 5×centre − 4 neighbours; warmth is the same per-channel scale as
+   the feColorMatrix. Only denoise approximates — a σ=0.5 gaussian against
+   CSS's blur(0.5px) — and at half a pixel that is not a visible difference.
+   ------------------------------------------------------------ */
+const ENC_VERT = `attribute vec2 p; varying vec2 v_uv;
+void main(){ v_uv = vec2(p.x, 1.0 - p.y); gl_Position = vec4(p*2.0-1.0, 0.0, 1.0); }`;
+
+const ENC_FRAG = `precision highp float;
+uniform sampler2D u_tex; uniform vec2 u_texel;
+uniform float u_denoise, u_sharpen, u_warm, u_contrast, u_sat, u_bright;
+varying vec2 v_uv;
+void main(){
+  vec2 t = u_texel;
+  vec3 c = texture2D(u_tex, v_uv).rgb;
+
+  if (u_denoise > 0.5) {
+    vec3 s = c * 0.4741;
+    s += texture2D(u_tex, v_uv + vec2(-t.x,-t.y)).rgb * 0.0242;
+    s += texture2D(u_tex, v_uv + vec2( 0.0,-t.y)).rgb * 0.1073;
+    s += texture2D(u_tex, v_uv + vec2( t.x,-t.y)).rgb * 0.0242;
+    s += texture2D(u_tex, v_uv + vec2(-t.x, 0.0)).rgb * 0.1073;
+    s += texture2D(u_tex, v_uv + vec2( t.x, 0.0)).rgb * 0.1073;
+    s += texture2D(u_tex, v_uv + vec2(-t.x, t.y)).rgb * 0.0242;
+    s += texture2D(u_tex, v_uv + vec2( 0.0, t.y)).rgb * 0.1073;
+    s += texture2D(u_tex, v_uv + vec2( t.x, t.y)).rgb * 0.0242;
+    c = s;
+  }
+  if (u_sharpen > 0.5) {
+    vec3 n = texture2D(u_tex, v_uv + vec2(0.0,-t.y)).rgb
+           + texture2D(u_tex, v_uv + vec2(0.0, t.y)).rgb
+           + texture2D(u_tex, v_uv + vec2(-t.x,0.0)).rgb
+           + texture2D(u_tex, v_uv + vec2( t.x,0.0)).rgb;
+    c = clamp(c * 5.0 - n, 0.0, 1.0);
+  }
+  c.r *= (1.0 + u_warm);
+  c.b *= (1.0 - u_warm);
+  c = (c - 0.5) * u_contrast + 0.5;
+  float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
+  c = mix(vec3(l), c, u_sat);
+  c *= u_bright;
+  gl_FragColor = vec4(clamp(c, 0.0, 1.0), 1.0);
+}`;
+
+let encGl = null;          // { cv, gl, loc } once built; false once known impossible
+
+function encGlSetup() {
+  if (encGl !== null) return encGl;
+  try {
+    const cv = document.createElement("canvas");
+    const gl = cv.getContext("webgl", { premultipliedAlpha: false, preserveDrawingBuffer: true });
+    if (!gl) throw new Error("no webgl");
+    const compile = (type, src) => {
+      const s = gl.createShader(type);
+      gl.shaderSource(s, src); gl.compileShader(s);
+      if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+      return s;
+    };
+    const prog = gl.createProgram();
+    gl.attachShader(prog, compile(gl.VERTEX_SHADER, ENC_VERT));
+    gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, ENC_FRAG));
+    gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+    gl.useProgram(prog);
+
+    const buf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0,0, 1,0, 0,1, 0,1, 1,0, 1,1]), gl.STATIC_DRAW);
+    const p = gl.getAttribLocation(prog, "p");
+    gl.enableVertexAttribArray(p);
+    gl.vertexAttribPointer(p, 2, gl.FLOAT, false, 0, 0);
+
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+
+    const loc = {};
+    ["u_texel","u_denoise","u_sharpen","u_warm","u_contrast","u_sat","u_bright"]
+      .forEach(n => { loc[n] = gl.getUniformLocation(prog, n); });
+    encGl = { cv, gl, loc };
+  } catch (e) {
+    encGl = false;     // fall back to ctx.filter; slow, but it still renders
+  }
+  return encGl;
+}
+
+/* Draws `src` graded into the shared WebGL canvas at W×H and hands that
+   canvas back for the caller to drawImage. Returns null if WebGL is not
+   available, so callers can fall back. */
+function encGlRender(src, W, H, c) {
+  const g = encGlSetup();
+  if (!g) return null;
+  const { cv, gl, loc } = g;
+  if (cv.width !== W || cv.height !== H) { cv.width = W; cv.height = H; }
+  gl.viewport(0, 0, W, H);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+  try {
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, src);
+  } catch (e) {
+    return null;        // a frame the GPU would not take; let the caller draw it plainly
+  }
+  gl.uniform2f(loc.u_texel, 1 / W, 1 / H);
+  gl.uniform1f(loc.u_denoise, c.denoise ? 1 : 0);
+  gl.uniform1f(loc.u_sharpen, c.sharpen ? 1 : 0);
+  gl.uniform1f(loc.u_warm, (c.warmth / 40) * 0.18);
+  gl.uniform1f(loc.u_contrast, 1 + c.contrast / 100);
+  gl.uniform1f(loc.u_sat, 1 + c.saturate / 100);
+  gl.uniform1f(loc.u_bright, 1 + c.brightness / 100);
+  gl.drawArrays(gl.TRIANGLES, 0, 6);
+  return cv;
+}
+
+/* What the rest of the app renders with. "none" whenever the controls are
+   neutral or the "use this everywhere" box is off, which is what keeps this
+   off the hot path for everyone not using it. Read by drawClipFitted, so it
+   is cached rather than recomputed from the DOM on every frame. */
+let encFilterCache = "none";
+let encParamsCache = null;     // the numbers the shader needs, so the export loop reads no DOM
+
+function refreshEncFilter() {
+  const c = encControls();
+  syncEncSvgFilter(c);
+  const on = c.apply && buildEncFilterString(c) !== "none";
+  encFilterCache = on ? buildEncFilterString(c) : "none";
+  encParamsCache = on ? c : null;
+  applyStageEnhance();
+  updateEnhancePreview();
+}
+
+/* The stage shows the <video> element itself, not a canvas of it, so the
+   live preview is a CSS filter on that element — no per-frame work, and it
+   lands on the real playback, "Preview the final cut" included. wmLayer gets
+   it too, or a repaired watermark patch would sit ungraded on a graded
+   frame. */
+function applyStageEnhance() {
+  const f = encFilterCache;
+  S.clips.forEach(cl => { if (cl.el) cl.el.style.filter = f; });
+  if (placeholderVideo) placeholderVideo.style.filter = f;
+  const wl = $("wmLayer");
+  if (wl) wl.style.filter = f;
+}
+
+/* Paints one enhanced frame from `src` onto `outCtx` at outW×outH, using the
+   settings as they stand regardless of the "use this everywhere" box — this
+   is the standalone Enhance & download path, where enhancing is the whole
+   point of the button. */
 function drawEnhancedFrame(outCtx, src, outW, outH, c) {
-  if (!encCanvasA) { encCanvasA = document.createElement("canvas"); encCanvasB = document.createElement("canvas"); }
-  [encCanvasA, encCanvasB].forEach(cv => { cv.width = outW; cv.height = outH; });
-  const actx = encCanvasA.getContext("2d");
-  actx.filter = encColorFilterCss(c);
-  actx.drawImage(src, 0, 0, outW, outH);
-  actx.filter = "none";
-
-  if (Math.abs(c.warmth) > 0.5) {
-    const warm = c.warmth > 0;
-    const alpha = Math.min(0.22, Math.abs(c.warmth) / 40 * 0.22);
-    actx.globalCompositeOperation = "overlay";
-    actx.fillStyle = warm ? `rgba(255,150,60,${alpha})` : `rgba(60,140,255,${alpha})`;
-    actx.fillRect(0, 0, outW, outH);
-    actx.globalCompositeOperation = "source-over";
-  }
-
-  if (c.sharpen) {
-    const bctx = encCanvasB.getContext("2d");
-    bctx.filter = "url(#sharpenKernel)";
-    bctx.drawImage(encCanvasA, 0, 0);
-    bctx.filter = "none";
-    outCtx.drawImage(encCanvasB, 0, 0, outW, outH);
-  } else {
-    outCtx.drawImage(encCanvasA, 0, 0, outW, outH);
-  }
+  const f = buildEncFilterString(c);
+  if (f === "none") { outCtx.drawImage(src, 0, 0, outW, outH); return; }
+  const graded = encGlRender(src, outW, outH, c);
+  if (graded) { outCtx.drawImage(graded, 0, 0, outW, outH); return; }
+  syncEncSvgFilter(c);
+  outCtx.filter = f;
+  outCtx.drawImage(src, 0, 0, outW, outH);
+  outCtx.filter = "none";
 }
 
 function enhanceOutputSize() {
@@ -2887,43 +3067,44 @@ function updateEnhancePreview() {
   drawEnhancedFrame(canvas.getContext("2d"), video, w, h, encControls());
 }
 
+function setEncSlider(id, v) {
+  const el = $(id), label = $(id + "Val");
+  if (el) el.value = v;
+  if (label) label.textContent = (v > 0 ? "+" : "") + v + (id === "encWarmth" ? "" : "%");
+}
+
 ["encContrast", "encSaturate", "encWarmth", "encBrightness"].forEach(id => {
   const el = $(id);
   if (!el) return;
-  el.addEventListener("input", () => {
-    const label = $(id + "Val");
-    if (label) label.textContent = (el.value > 0 ? "+" : "") + el.value + (id === "encWarmth" ? "" : "%");
-    updateEnhancePreview();
-  });
+  el.addEventListener("input", () => { setEncSlider(id, +el.value); refreshEncFilter(); });
 });
-["encSharpen", "encDenoise", "encUpscale"].forEach(id => {
+["encSharpen", "encDenoise", "encApply", "encUpscale"].forEach(id => {
   const el = $(id);
-  if (el) el.addEventListener(id === "encUpscale" ? "change" : "input", updateEnhancePreview);
+  if (el) el.addEventListener(id === "encUpscale" ? "change" : "input", refreshEncFilter);
 });
 
 if ($("btnAutoEnhance")) {
   $("btnAutoEnhance").addEventListener("click", () => {
-    const vals = { encContrast: 8, encSaturate: 18, encWarmth: 6, encBrightness: 2 };
-    Object.entries(vals).forEach(([id, v]) => {
-      $(id).value = v;
-      $(id + "Val").textContent = (v > 0 ? "+" : "") + v + (id === "encWarmth" ? "" : "%");
-    });
+    setEncSlider("encContrast", 8);
+    setEncSlider("encSaturate", 18);
+    setEncSlider("encWarmth", 6);
+    setEncSlider("encBrightness", 2);
     $("encSharpen").checked = true;
     $("encDenoise").checked = true;
+    $("encApply").checked = true;   // pressing this means "use it", not "show me"
     $("encUpscale").value = "1.5";
-    updateEnhancePreview();
+    refreshEncFilter();
+    setEnhanceStatus("Applied — the stage, the preview and the step 5 export all use this now.", "ok");
   });
 }
 if ($("btnResetEnhance")) {
   $("btnResetEnhance").addEventListener("click", () => {
-    ["encContrast", "encSaturate", "encWarmth", "encBrightness"].forEach(id => {
-      $(id).value = 0;
-      $(id + "Val").textContent = "0" + (id === "encWarmth" ? "" : "%");
-    });
-    $("encSharpen").checked = true;
-    $("encDenoise").checked = true;
+    ["encContrast", "encSaturate", "encWarmth", "encBrightness"].forEach(id => setEncSlider(id, 0));
+    $("encSharpen").checked = false;
+    $("encDenoise").checked = false;
     $("encUpscale").value = "1.5";
-    updateEnhancePreview();
+    refreshEncFilter();
+    setEnhanceStatus("Back to the untouched picture.", "");
   });
 }
 
@@ -3052,6 +3233,10 @@ function setEnhanceStatus(msg, kind) {
 }
 
 if ($("btnEnhanceDownload")) $("btnEnhanceDownload").addEventListener("click", exportEnhanced);
+
+// Seed the cache from the controls as they actually stand, rather than
+// trusting the "none" it was declared with.
+refreshEncFilter();
 
 /* ============================================================
    Burn-in recorder
@@ -3291,6 +3476,8 @@ window.__cs = { S, buildASS, buildSRT, buildJSON, markWord, undoMark, resyncFrom
                 seekAll, nowTime, totalTime, moveClip, removeClip,
                 paceStats, pacingReport, showCoachNotes, tightenScript, trimVideoToPace, undoPaceFix,
                 refreshExports, allTimed,
+                encControls, buildEncFilterString, refreshEncFilter, drawClipFitted,
+                get encFilter() { return encFilterCache; },
                 get activeClip() { return activeClip; }, set activeClip(v) { activeClip = v; } };
 
 
