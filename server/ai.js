@@ -11,6 +11,7 @@
    place. They cannot drift apart, because there is only one of them.
    ============================================================ */
 const express = require('express');
+const log = require('./log');
 const { recordUsage, usageThisMonth } = require('./db');
 const { requireUser } = require('./auth');
 const { checkAllowance, allowanceSummary, ttsCostMicros,
@@ -65,9 +66,15 @@ async function pickModels() {
 /* One request, with a short leash on the first attempt. A busy model
    sometimes accepts and then never answers; waiting the full timeout
    for that is worse than asking somebody else. */
+/* Which model the last attempt reached for. The timeout path needs it: the
+   request was aborted, so nothing came back to name it, and the model that
+   went quiet is exactly the one not to pick again. */
+let lastPicked = null;
+
 async function callGoogle(kind, body, attempt) {
   const models = await pickModels();
   const model = kind === 'tts' ? models.tts : models.text;
+  lastPicked = model;
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), attempt === 0 ? 25000 : 90000);
   try {
@@ -83,6 +90,18 @@ async function callGoogle(kind, body, attempt) {
   }
 }
 
+/* A model that cannot do the job is a reason to ask a different model, not a
+   reason to stop. Google says so in three different ways: the name is gone
+   (404), the model is busy (503), or the model is there but will not take
+   this particular request — no pictures, no JSON schema, too many parts.
+   That last one arrives as a 400 and used to end the whole call, which is
+   how "Find the watermark" could fail outright while every text-only
+   feature on the same key kept working: the watermark request is the one
+   that sends pictures. */
+const GONE   = /no longer available|not found|does not exist/i;
+const BUSY   = /high demand|overloaded|unavailable|try again later/i;
+const CANNOT = /not supported|does not support|unsupported|multimodal|image input|inline_?data|response_?schema|response_?mime/i;
+
 async function callWithFallback(kind, body) {
   let last = '';
   for (let attempt = 0; attempt < 3; attempt++) {
@@ -90,16 +109,23 @@ async function callWithFallback(kind, body) {
     try {
       ({ res, model } = await callGoogle(kind, body, attempt));
     } catch (e) {
-      /* Aborted: treat the model as unavailable and move on. */
-      if (attempt < 2) { cache.at = 0; continue; }
+      /* Silence is the same as a refusal, and the model that went quiet
+         should not be the one picked again on the next go round. */
+      if (attempt < 2) { if (lastPicked) rejected.add(lastPicked); cache.at = 0; continue; }
       throw new Error('Google did not answer in time.');
     }
     if (res.ok) return res.json();
 
     const err = await res.json().catch(() => ({}));
     last = (err.error && err.error.message) || `HTTP ${res.status}`;
+    log.warn('gemini refused', { model, status: res.status, kind,
+                                 parts: (body.contents?.[0]?.parts || []).length,
+                                 schema: !!body.generationConfig?.responseSchema,
+                                 reason: String(last).slice(0, 300) });
+
     const moveOn = res.status === 404 || res.status === 503 ||
-      /no longer available|not found|not supported|does not exist|high demand|overloaded|unavailable/i.test(last);
+      GONE.test(last) || BUSY.test(last) ||
+      (res.status === 400 && CANNOT.test(last));
     if (moveOn && attempt < 2) { rejected.add(model); cache.at = 0; continue; }
     if (res.status === 429) throw new Error('Google is rate limiting us. Try again in a minute.');
     throw new Error(last);
@@ -167,6 +193,10 @@ router.post('/text', requireUser, express.json({ limit: '4mb' }), async (req, re
     const text = (out.candidates?.[0]?.content?.parts || []).map(p => p.text || '').join('').trim();
     res.json({ text });
   } catch (e) {
+    /* The 502 in the access log says a call failed and nothing else, which
+       is no use at all when the question is which model refused what. */
+    log.fromException(e, { route: 'ai/text', images: images.length,
+                           schema: !!req.body.schema, model: lastPicked });
     res.status(502).json({ error: String(e.message || e) });
   }
 });

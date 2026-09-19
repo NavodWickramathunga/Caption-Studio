@@ -3669,11 +3669,18 @@ async function callGeminiApi(promptText, mediaBlob = null, jsonSchema = null) {
        the busiest, and waiting out a spike is worse than reading the same
        question to a model that is free right now. */
     const gone     = res.status === 404 ||
-                     /no longer available|not found|not supported|does not exist/i.test(lastMsg);
+                     /no longer available|not found|does not exist/i.test(lastMsg);
     const swamped  = res.status === 503 ||
                      /high demand|overloaded|unavailable|try again later/i.test(lastMsg);
+    /* A third case, and the one that was ending the call outright: the model
+       is alive and not busy, it simply will not take this request — pictures
+       or a JSON schema it does not do. That is another model's job, not a
+       dead end, and it is why the calls that send frames could fail while
+       every text-only call on the same key worked. */
+    const cannot   = res.status === 400 &&
+                     /not supported|does not support|unsupported|multimodal|image input|inline_?data|response_?schema|response_?mime/i.test(lastMsg);
 
-    if ((gone || swamped) && attempt < 2) {
+    if ((gone || swamped || cannot) && attempt < 2) {
       GEMINI_REJECTED.add(model);   // never offer this one again this session
       GEMINI_MODEL = null;
       continue;                      // resolve a different model and try again
@@ -3682,7 +3689,7 @@ async function callGeminiApi(promptText, mediaBlob = null, jsonSchema = null) {
     if (res.status === 429) throw new Error("Free-tier rate limit reached. Wait about a minute and try again.");
     if (res.status === 400 && /API key/i.test(lastMsg)) throw new Error("That API key was rejected. Open the 🔑 dialog and paste a fresh one.");
     if (/quota|billing|credits/i.test(lastMsg)) throw new Error("This key's project is out of quota or credits. Make a key in a new project.");
-    if (gone || swamped) throw new Error(`No Gemini model on this key would take the request. Last tried "${model}".`);
+    if (gone || swamped || cannot) throw new Error(`No Gemini model on this key would take the request. Last tried "${model}" — ${lastMsg || "no reason given"}.`);
     throw new Error(lastMsg || `Gemini API HTTP Error ${res.status}`);
   }
 
@@ -4833,8 +4840,13 @@ function shortReason(e) {
   if (/API key|rejected|400/i.test(m))       return "The API key wasn't accepted";
   if (/didn't answer|timed out|90s/i.test(m)) return "Google didn't answer in time";
   if (/reach Google|Failed to fetch|network/i.test(m)) return "Google couldn't be reached";
-  if (/no longer available|model/i.test(m))  return "That Gemini model wasn't available";
-  return "Gemini wasn't available";
+  if (/no Gemini model|no longer available|not found|does not exist/i.test(m))
+    return "No Gemini model would take it — " + m.replace(/^.*?—\s*/, "");
+  /* Anything left is something nobody anticipated, and the four tidy words
+     that used to stand in for it ("That Gemini model wasn't available")
+     matched on the bare word "model" and threw away the one sentence that
+     said what actually went wrong. Show it. */
+  return m.slice(0, 200) || "Gemini wasn't available";
 }
 
 /* ---- the coaching panel: what would cost you views ---- */
