@@ -3040,13 +3040,23 @@ function applyStageEnhance() {
    point of the button. */
 function drawEnhancedFrame(outCtx, src, outW, outH, c) {
   const f = buildEncFilterString(c);
-  if (f === "none") { outCtx.drawImage(src, 0, 0, outW, outH); return; }
-  const graded = encGlRender(src, outW, outH, c);
-  if (graded) { outCtx.drawImage(graded, 0, 0, outW, outH); return; }
-  syncEncSvgFilter(c);
-  outCtx.filter = f;
-  outCtx.drawImage(src, 0, 0, outW, outH);
-  outCtx.filter = "none";
+  const graded = f === "none" ? null : encGlRender(src, outW, outH, c);
+  if (f === "none") {
+    outCtx.drawImage(src, 0, 0, outW, outH);
+  } else if (graded) {
+    outCtx.drawImage(graded, 0, 0, outW, outH);
+  } else {
+    syncEncSvgFilter(c);
+    outCtx.filter = f;
+    outCtx.drawImage(src, 0, 0, outW, outH);
+    outCtx.filter = "none";
+  }
+  /* This path does not go through drawClipFitted, so the watermark repair
+     has to be asked for here too — without it, Enhance & download was the
+     one export that still carried the mark, and it was the last place you
+     would think to look for it. The frame fills the canvas edge to edge
+     here, so the whole canvas is the picture. */
+  repairWatermarks(outCtx, src, 0, 0, outW, outH);
 }
 
 function enhanceOutputSize() {
@@ -8520,13 +8530,22 @@ if ($("aiEngine")) {
 const POST_SCHEMA = {
   type: "object",
   properties: {
+    /* Read first, write second. The model says what it thinks the video is
+       before it writes a word of copy, which is both a better post and the
+       only way you can tell that it understood the thing at all. */
+    videoTopic:    { type: "string" },
+    audience:      { type: "string" },
+    searchTerms:   { type: "array", items: { type: "string" } },
+    bestPlatform:  { type: "string" },
+    platformWhy:   { type: "string" },
     ytTitle:       { type: "string" },
     ytDescription: { type: "string" },
     ytTags:        { type: "array", items: { type: "string" } },
     fbPost:        { type: "string" },
     hashtags:      { type: "array", items: { type: "string" } }
   },
-  required: ["ytTitle", "ytDescription", "ytTags", "fbPost", "hashtags"]
+  required: ["videoTopic", "audience", "searchTerms", "bestPlatform", "platformWhy",
+             "ytTitle", "ytDescription", "ytTags", "fbPost", "hashtags"]
 };
 
 async function writePosts() {
@@ -8535,33 +8554,71 @@ async function writePosts() {
   const script = (scriptEl.value || "").trim() || ($("refScript") ? $("refScript").value.trim() : "");
   const lang = ($("postLang") && $("postLang").value) || "";
 
-  if (!keywords && !script) {
-    setPostStatus("Give it some keywords, or write your script in step 3 first.", "warn");
+  if (!S.clips.length && !script && !keywords) {
+    setPostStatus("Load a clip in step 1, or write your script in step 3, first.", "warn");
     return;
   }
 
-  startAiClock(btn, "Writing");
+  startAiClock(btn, "Watching");
   setPostStatus("");
   try {
-    const prompt =
-      "Write the posting copy for a short vertical video.\n\n" +
-      (script ? "The video says this, word for word:\n" + script + "\n\n" : "") +
-      (keywords ? "Target these search terms: " + keywords + "\n\n" : "") +
-      (lang ? "Write everything in " + lang + ".\n\n" : "") +
-      "Return JSON with exactly these keys:\n" +
-      "\"ytTitle\": a YouTube title under 70 characters. Front-load the search term. " +
-      "No clickbait that the video does not pay off.\n" +
-      "\"ytDescription\": 2 short paragraphs. First line carries the search term, because " +
-      "only the first line shows before “more”. End with a line asking for the subscribe.\n" +
-      "\"ytTags\": 10 to 15 lowercase tags, specific before generic, no hashes.\n" +
-      "\"fbPost\": a Facebook caption of 2 or 3 sentences. Conversational, ends in a question, " +
-      "because comments are what Facebook pushes.\n" +
-      "\"hashtags\": 5 to 8 hashtags with the hash, mixed broad and niche.\n\n" +
-      "Do not invent facts that are not in the script.";
+    /* The old version asked you what the video should be found for. You are
+       the one who just made it, so you already know — but the model can see
+       it, and the point of asking a model is that it does the deciding.
+       Six stills across the timeline is what it needs to do that: enough to
+       tell a cooking video from a walking tour, cheap enough to upload. */
+    let stills = [];
+    if (S.clips.length) {
+      try { stills = await ctaGrabStills(6); } catch (e) { stills = []; }
+    }
+    if (stills.length) setPostStatus("Read " + stills.length + " frames — writing.", "");
+    startAiClock(btn, "Writing");
 
-    const out = await callWriter(prompt, null, POST_SCHEMA);
+    const prompt =
+      "You are writing the posting copy for a short vertical video, and you are the one " +
+      "deciding what it should be found for — nobody has told you.\n\n" +
+      (stills.length
+        ? "Attached are " + stills.length + " still frames taken evenly across the video, " +
+          "in order, at roughly " + stills.map(s => Math.round(s.at) + "s").join(", ") +
+          ". Work out from them what is actually happening: the subject, the place, the " +
+          "setting, the style, whether anyone is talking to camera.\n\n"
+        : "") +
+      (script ? "The video says this, word for word:\n" + script + "\n\n" : "") +
+      (keywords ? "The person posting it added: " + keywords + "\n\n" : "") +
+      (lang ? "Write everything in " + lang + ".\n\n" : "") +
+      "First decide, then write. Return JSON with exactly these keys:\n" +
+      "\"videoTopic\": one sentence on what this video actually is, from the frames and " +
+      "the script rather than from anything you were told.\n" +
+      "\"audience\": one short line on who goes looking for this.\n" +
+      "\"searchTerms\": the 3 to 5 terms you decided this should be found for, most " +
+      "important first. These are yours to choose.\n" +
+      "\"bestPlatform\": exactly one of \"YouTube\", \"Facebook\" or \"Both\" — where this " +
+      "particular video will do better, judged on what is in it: a searchable how-to or a " +
+      "place people look up leans YouTube, something reaction-led or local and shareable " +
+      "leans Facebook.\n" +
+      "\"platformWhy\": one sentence saying why, pointing at something actually in the video.\n" +
+      "\"ytTitle\": a YouTube title under 70 characters, front-loading your first search " +
+      "term. No clickbait the video does not pay off.\n" +
+      "\"ytDescription\": 2 short paragraphs. The first line carries the search term, " +
+      "because only the first line shows before “more”. End with a line asking for the " +
+      "subscribe.\n" +
+      "\"ytTags\": 10 to 15 lowercase tags, specific before generic, no hashes.\n" +
+      "\"fbPost\": a Facebook caption of 2 or 3 sentences. Conversational, ends in a " +
+      "question, because comments are what Facebook pushes.\n" +
+      "\"hashtags\": 5 to 8 hashtags with the hash, mixed broad and niche.\n\n" +
+      "Write both the YouTube and the Facebook copy either way — bestPlatform is advice " +
+      "about where to put it first, not permission to leave the other one empty. " +
+      "Describe only what you can see in the frames or hear in the script; invent nothing " +
+      "beyond them.";
+
+    /* An empty array is still truthy, and callWriter reads "there is media"
+       as "this has to go to Gemini" — so with no frames it has to be null,
+       or picking another writer would quietly stop working. */
+    const out = await callWriter(prompt, stills.length ? stills.map(s => s.blob) : null,
+                                 POST_SCHEMA);
     if (!out || !out.ytTitle) throw new Error("Nothing usable came back — try again.");
 
+    renderPostRead(out);
     $("ytTitle").value = out.ytTitle || "";
     $("ytDesc").value = out.ytDescription || "";
     $("ytTags").value = (out.ytTags || []).join(", ");
@@ -8571,13 +8628,42 @@ async function writePosts() {
     /* The title limit is the one that actually bites: YouTube cuts it off
        mid-word in search and you never see it happen. */
     const n = ($("ytTitle").value || "").length;
-    setPostStatus("Written. Title is " + n + " characters" +
-                  (n > 70 ? " — over 70, so search will cut it off." : ", which fits.") , n > 70 ? "warn" : "ok");
+    const where = String(out.bestPlatform || "").trim();
+    setPostStatus("Written" + (where ? " — post it to " + where + " first" : "") +
+                  ". Title is " + n + " characters" +
+                  (n > 70 ? " — over 70, so search will cut it off." : ", which fits."),
+                  n > 70 ? "warn" : "ok");
     stopAiClock(btn, "✅ Written", 2400);
   } catch (e) {
     stopAiClock(btn);
     setPostStatus(String((e && e.message) || e), "warn");
   }
+}
+
+/* The model's read of the video, shown above the copy it produced. Anything
+   it did not return is left out rather than shown empty, because a writer
+   without the frames can still answer the copy keys and not these. */
+function renderPostRead(out) {
+  const box = $("postRead");
+  if (!box) return;
+  const topic = String(out.videoTopic || "").trim();
+  const who   = String(out.audience || "").trim();
+  const terms = (out.searchTerms || []).filter(Boolean);
+  const where = String(out.bestPlatform || "").trim();
+  const why   = String(out.platformWhy || "").trim();
+
+  const put = (id, text) => {
+    const el = $(id);
+    if (!el) return;
+    el.textContent = text || "";
+    el.style.display = text ? "" : "none";
+  };
+  put("postReadTopic", topic);
+  put("postReadWho", who ? "Who looks for it: " + who : "");
+  put("postReadTerms", terms.length ? "Found for: " + terms.join(" · ") : "");
+  put("postReadFit", where ? "Post it to " + where + " first" + (why ? " — " + why : "") : "");
+
+  box.style.display = (topic || who || terms.length || where) ? "" : "none";
 }
 
 function setPostStatus(msg, kind) {

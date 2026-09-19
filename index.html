@@ -299,13 +299,14 @@
          somewhere else. -->
     <section class="step autocard" id="stepPost">
       <h2><i>📣</i>Write the post</h2>
-      <p class="hint">Titles, descriptions, tags and a Facebook caption, written from the same
-        script the video says — so the words match what is actually in it.</p>
+      <p class="hint">It watches the video, reads the script, works out what the thing is
+        about and who would search for it, and writes the post from that — so you are not
+        the one guessing at keywords.</p>
 
       <div class="field">
-        <label for="postKeywords">What should it be found for?</label>
+        <label for="postKeywords">Anything it must know? <span style="opacity:.6">(optional)</span></label>
         <input type="text" id="postKeywords" class="txt"
-               placeholder="e.g. colombo street food, isso wade, sri lanka food tour">
+               placeholder="e.g. channel name, a link, a term you want it found for">
       </div>
       <div class="grid2" style="margin-top:10px">
         <div class="field">
@@ -323,6 +324,18 @@
       <div class="status" id="postStatus" role="status" aria-live="polite"></div>
 
       <div id="postOut" style="display:none;margin-top:12px">
+        <!-- What it thought it was looking at, before any of the copy below.
+             If this part is wrong the copy under it is wrong too, and it is
+             far quicker to spot it here than in four separate boxes. -->
+        <div id="postRead" style="display:none;border:1px solid var(--line);border-radius:9px;
+             padding:11px 12px;background:var(--panel-2);margin-bottom:12px">
+          <div style="font-size:11px;letter-spacing:.06em;text-transform:uppercase;
+               color:var(--ivory-faint);margin-bottom:6px">What it saw in the video</div>
+          <div id="postReadTopic" style="font-size:13px;color:var(--ivory);margin-bottom:5px"></div>
+          <div id="postReadWho" style="font-size:12px;color:var(--ivory-dim);margin-bottom:5px"></div>
+          <div id="postReadTerms" style="font-size:12px;color:var(--ivory-dim);margin-bottom:5px"></div>
+          <div id="postReadFit" style="font-size:12px;color:var(--ivory-dim)"></div>
+        </div>
         <div class="field">
           <label for="ytTitle">YouTube title</label>
           <input type="text" id="ytTitle" class="txt">
