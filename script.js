@@ -795,8 +795,19 @@ function updateQualityNote() {
 }
 
 /* Fit a clip into the output frame without distorting it. */
-function drawClipFitted(ctx, el, W, H) {
-  const vw = el.videoWidth, vh = el.videoHeight;
+/* An element reports its size one way, a decoded frame another. */
+function pictureSize(src) {
+  if (!src) return { w: 0, h: 0 };
+  if (src.videoWidth !== undefined) return { w: src.videoWidth, h: src.videoHeight };
+  return { w: src.displayWidth || 0, h: src.displayHeight || 0 };
+}
+
+/* `src` is either a clip's <video> element or a VideoFrame decoded straight
+   out of the file - both draw the same, and both carry the same picture.
+   `clip` says which clip it belongs to, which a bare frame cannot. */
+function drawClipFitted(ctx, src, W, H, clip) {
+  const el = src;
+  const { w: vw, h: vh } = pictureSize(src);
   if (!vw || !vh) return;
   const scale = Math.min(W / vw, H / vh);
   const dw = vw * scale, dh = vh * scale;
@@ -822,7 +833,7 @@ function drawClipFitted(ctx, el, W, H) {
   /* Anything burned into the footage is repaired here, on the frame that was
      just drawn, so the export and the screen recorder both get it without
      either of them knowing the feature exists. */
-  repairWatermarks(ctx, el, dx, dy, dw, dh);
+  repairWatermarks(ctx, el, dx, dy, dw, dh, clip);
 }
 
 wireClipElement(placeholderVideo);
@@ -2291,7 +2302,331 @@ async function getMuxer() {
 const CAN_MP4 = !!(window.VideoEncoder && window.AudioEncoder &&
                    window.VideoFrame && window.AudioData);
 
+/* ============================================================
+   Reading a clip's frames by decoding it, instead of seeking it.
+
+   The export used to park the <video> element on every single output
+   moment - 900 seeks for a 30-second render, each one a full round trip
+   through the decoder for a picture it had usually just thrown away. That
+   was most of the wait.
+
+   A file is a stream of frames in order, and the render walks time
+   forwards, so the honest way to read it is to decode it once from the
+   front and take frames as they come. That is what this does: demux the
+   clip with mp4box, feed the samples to a VideoDecoder, and hand back the
+   frame covering whatever moment is asked for.
+
+   The pixels are the same pixels. This is the same decoder the <video>
+   element was already using; the only difference is that it is no longer
+   being asked to start over 900 times. Anything this cannot read - a
+   container mp4box will not demux, a codec the decoder will not take, a
+   clip carrying a rotation, a size that disagrees with what the element
+   reported - falls straight back to the seeking path, which is left
+   exactly as it was. Slower, but never wrong.
+   ============================================================ */
+const MP4BOX_URL = "https://cdn.jsdelivr.net/npm/mp4box@0.5.2/+esm";
+let mp4boxLib = null;
+async function getMp4Box() {
+  if (!mp4boxLib) mp4boxLib = await import(MP4BOX_URL);
+  return mp4boxLib;
+}
+
+/* Is this actually an MP4-family file?
+
+   Worth asking before the demuxer is handed anything, because it is not
+   quiet about what it cannot read: a .webm, or a file that is not video at
+   all, produces a console error per box it stumbles over - hundreds of
+   lines about a clip that was always going to take the seeking path. Every
+   file in this family carries 'ftyp' at byte four. */
+async function looksLikeMp4(file) {
+  try {
+    const head = new Uint8Array(await file.slice(0, 12).arrayBuffer());
+    if (head.length < 8) return false;
+    return head[4] === 0x66 && head[5] === 0x74 && head[6] === 0x79 && head[7] === 0x70;
+  } catch (e) { return false; }
+}
+
+/* How far ahead of the frame being drawn the decoder is allowed to run.
+   Small on purpose: see pump(). */
+const LOOKAHEAD = 6;
+
+const CAN_DECODE = !!(window.VideoDecoder && window.VideoFrame && window.EncodedVideoChunk);
+
+/* A clip shot on a phone carries a rotation in its header, and the <video>
+   element applies it while a raw decoded frame does not. Rather than
+   reimplement that turn and risk getting it wrong, hand those clips back to
+   the seeking path. Identity is the only matrix this claims to handle. */
+function isUprightMatrix(m) {
+  if (!m || m.length < 9) return true;      // nothing stated: nothing to undo
+  return m[0] === 65536 && m[1] === 0 && m[3] === 0 && m[4] === 65536;
+}
+
+/* The codec-private bytes (avcC / hvcC / ...) the decoder needs to make
+   sense of the samples. */
+function codecDescription(file, trackId, DataStream) {
+  const trak = file.getTrackById(trackId);
+  const stbl = trak && trak.mdia && trak.mdia.minf ? trak.mdia.minf.stbl : null;
+  if (!stbl || !stbl.stsd || !stbl.stsd.entries) return null;
+  for (const e of stbl.stsd.entries) {
+    const box = e.avcC || e.hvcC || e.vpcC || e.av1C;
+    if (!box) continue;
+    const ds = new DataStream(undefined, 0, DataStream.BIG_ENDIAN);
+    box.write(ds);
+    return new Uint8Array(ds.buffer, 8);   // drop the box header
+  }
+  return null;
+}
+
+class ClipDecoder {
+  constructor(clip) {
+    this.clip = clip;
+    this.samples = [];
+    this.out = [];          // decoded frames waiting, in presentation order
+    this.cur = null;        // the frame covering the moment last asked for
+    this.curStart = null;
+    this.fed = 0;
+    this.drained = false;
+    this.flushed = false;
+    this.err = null;
+    this.wake = null;
+  }
+
+  async open() {
+    if (!CAN_DECODE || !this.clip.file) throw new Error("no decoder");
+    if (!await looksLikeMp4(this.clip.file)) throw new Error("not an MP4-family file");
+    const lib = await getMp4Box();
+    const MP4Box = lib.default || lib;
+    const DataStream = lib.DataStream || MP4Box.DataStream;
+    if (!MP4Box || !MP4Box.createFile || !DataStream) throw new Error("no demuxer");
+
+    const buf = await this.clip.file.arrayBuffer();
+    buf.fileStart = 0;
+
+    const file = MP4Box.createFile();
+    let info = null, failed = false;
+    file.onError = () => { failed = true; };
+    file.onReady = i => { info = i; };
+    file.onSamples = (id, user, list) => { for (const s of list) this.samples.push(s); };
+    file.appendBuffer(buf);
+    file.flush();
+    if (failed || !info || !info.videoTracks || !info.videoTracks.length) {
+      throw new Error("not a container this can demux");
+    }
+
+    const t = info.videoTracks[0];
+    if (!isUprightMatrix(t.matrix)) throw new Error("clip is rotated");
+
+    /* If the demuxer and the <video> element disagree about the size, one of
+       them is modelling something this does not - stop rather than guess. */
+    const el = this.clip.el;
+    if (el && el.videoWidth &&
+        (Math.abs(el.videoWidth - t.video.width) > 1 ||
+         Math.abs(el.videoHeight - t.video.height) > 1)) {
+      throw new Error("size disagrees with the element");
+    }
+
+    const description = codecDescription(file, t.id, DataStream);
+    const cfg = {
+      codec: t.codec,
+      codedWidth: t.video.width,
+      codedHeight: t.video.height,
+      ...(description ? { description } : {})
+    };
+    const sup = await VideoDecoder.isConfigSupported(cfg);
+    if (!sup || !sup.supported) throw new Error("decoder will not take " + t.codec);
+
+    file.setExtractionOptions(t.id, null, { nbSamples: Number.MAX_SAFE_INTEGER });
+    file.start();
+    file.flush();
+    if (!this.samples.length) throw new Error("no samples came out");
+
+    /* Where the decoder can be restarted from, if anything ever asks for a
+       moment earlier than the one it is sitting on. */
+    this.syncs = [];
+    for (let i = 0; i < this.samples.length; i++) {
+      const s = this.samples[i];
+      if (s.is_sync) this.syncs.push({ i, t: s.cts / s.timescale });
+    }
+    if (!this.syncs.length) this.syncs.push({ i: 0, t: 0 });
+
+    this.cfg = cfg;
+    this.dec = new VideoDecoder({
+      output: f => {
+        this.out.push(f);
+        if (this.wake) { const w = this.wake; this.wake = null; w(); }
+      },
+      error: e => {
+        this.err = e;
+        if (this.wake) { const w = this.wake; this.wake = null; w(); }
+      }
+    });
+    this.dec.configure(cfg);
+    return this;
+  }
+
+  /* The frame covering `want` seconds into the clip. Holds the last frame if
+     asked past the end, which is what the end card wants. */
+  async frameAt(want) {
+    if (this.err) throw this.err;
+    if (this.curStart !== null && want < this.curStart - 1e-6) this.restartBefore(want);
+
+    for (;;) {
+      while (this.out.length && this.out[0].timestamp / 1e6 <= want + 1e-6) {
+        const f = this.out.shift();
+        if (this.cur) this.cur.close();
+        this.cur = f;
+        this.curStart = f.timestamp / 1e6;
+      }
+      // something decoded and waiting that starts later: the one held is it
+      if (this.out.length && this.cur) return this.cur;
+      if (this.drained) {
+        if (this.cur) return this.cur;
+        throw new Error("the clip decoded to nothing");
+      }
+      await this.pump();
+      if (this.err) throw this.err;
+    }
+  }
+
+  async pump() {
+    /* Only ever run a short way ahead. A decoded frame is a real picture
+       held on the GPU, not a promise of one, and a decoder whose output is
+       being held open stops accepting work: feeding the whole clip in at
+       once wedges it solid after a dozen frames or so. Read a little, use
+       it, let it go. */
+    while (this.fed < this.samples.length &&
+           this.out.length < LOOKAHEAD &&
+           this.dec.decodeQueueSize < LOOKAHEAD) {
+      const s = this.samples[this.fed++];
+      this.dec.decode(new EncodedVideoChunk({
+        type: s.is_sync ? "key" : "delta",
+        timestamp: Math.round(s.cts * 1e6 / s.timescale),
+        duration: Math.round(s.duration * 1e6 / s.timescale),
+        data: s.data
+      }));
+    }
+
+    /* Every sample is in and the decoder has nothing left in hand: flush to
+       shake out the last frames, and that is the end of the clip. */
+    if (this.fed >= this.samples.length && !this.out.length && !this.dec.decodeQueueSize) {
+      if (!this.flushed) { this.flushed = true; await this.dec.flush(); }
+      this.drained = true;
+      return;
+    }
+
+    /* Nothing out yet - the decoder is still working. Wait to be told, with
+       a ceiling so a decoder that has gone quiet cannot hang a render. */
+    if (!this.out.length) {
+      const before = this.out.length;
+      await new Promise(r => {
+        this.wake = r;
+        setTimeout(() => { if (this.wake === r) { this.wake = null; r(); } }, 250);
+      });
+      /* Waiting that achieves nothing, over and over, means the decoder has
+         stopped. Give up on it rather than spin - the caller falls back to
+         seeking, which is slower but always answers. */
+      this.stalls = this.out.length > before ? 0 : (this.stalls || 0) + 1;
+      if (this.stalls > 40) throw new Error("the decoder stopped responding");
+    } else {
+      this.stalls = 0;
+    }
+  }
+
+  restartBefore(want) {
+    try { this.dec.reset(); this.dec.configure(this.cfg); }
+    catch (e) { this.err = e; return; }
+    for (const f of this.out) { try { f.close(); } catch (e) {} }
+    this.out = [];
+    if (this.cur) { try { this.cur.close(); } catch (e) {} }
+    this.cur = null; this.curStart = null;
+    let at = this.syncs[0].i;
+    for (const s of this.syncs) { if (s.t <= want + 1e-6) at = s.i; else break; }
+    this.fed = at;
+    this.drained = false;
+    this.flushed = false;
+  }
+
+  close() {
+    for (const f of this.out) { try { f.close(); } catch (e) {} }
+    this.out = [];
+    if (this.cur) { try { this.cur.close(); } catch (e) {} this.cur = null; }
+    try { this.dec.close(); } catch (e) {}
+  }
+}
+
+/* Opens a decoder per clip on first use and remembers the ones that would
+   not open, so a clip the fast path cannot read is tried once and then left
+   alone for the rest of the render. Returns null to mean "seek it instead".
+
+   Frames handed back stay owned by the reader: draw from one, do not keep
+   it, and never close it. close() when the render is done. */
+function makeFrameReader() {
+  const made = new Map();
+  return {
+    async frame(clip, local) {
+      if (!CAN_DECODE) return null;
+      if (!made.has(clip)) {
+        let d = null;
+        try { d = await new ClipDecoder(clip).open(); }
+        catch (e) { d = null; }
+        made.set(clip, d);
+      }
+      const d = made.get(clip);
+      if (!d) return null;
+      try {
+        return await d.frameAt(local);
+      } catch (e) {
+        try { d.close(); } catch (e2) {}
+        made.set(clip, null);     // seek this clip for the rest of the render
+        return null;
+      }
+    },
+    /* Give up on the fast path for one clip and seek it from here on. */
+    drop(clip) {
+      const d = made.get(clip);
+      if (d) { try { d.close(); } catch (e) {} }
+      made.set(clip, null);
+    },
+    close() {
+      for (const d of made.values()) if (d) { try { d.close(); } catch (e) {} }
+      made.clear();
+    }
+  };
+}
+
 /* Best H.264 profile this machine will take at the given size. */
+/* Wait for the encoder to catch up, without burning the wait on a timer.
+
+   The loop used to poll: if more than 16 frames were queued, sleep 4ms and
+   look again. That sleeps past the moment the encoder is free, and on a
+   fast machine it is time lost on every single frame. The 'dequeue' event
+   fires exactly when a frame leaves the queue, so wait on that instead and
+   carry on the instant there is room. A deeper queue also keeps a hardware
+   encoder fed rather than starving it between frames.
+
+   This changes nothing about what gets encoded - same frames, same order,
+   same bitrate, same bytes out. Only the waiting is different. */
+const ENC_QUEUE_MAX = 48;
+function drainQueue(enc) {
+  if (!enc || enc.encodeQueueSize <= ENC_QUEUE_MAX) return null;
+  return new Promise(resolve => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      if (enc.removeEventListener) enc.removeEventListener("dequeue", onDeq);
+      clearTimeout(timer);
+      resolve();
+    };
+    const onDeq = () => { if (enc.encodeQueueSize <= ENC_QUEUE_MAX) finish(); };
+    /* 'dequeue' is not in every browser yet, and an encoder that has errored
+       out will never fire it again - so keep a timer as the floor. */
+    const timer = setTimeout(finish, 50);
+    if (enc.addEventListener) enc.addEventListener("dequeue", onDeq);
+    else finish();
+  });
+}
+
 async function pickH264(width, height, framerate) {
   const tries = ["avc1.640028", "avc1.4D0028", "avc1.42E01F"];
   for (const codec of tries) {
@@ -2666,6 +3001,21 @@ async function renderMp4() {
   pauseAll();
   S.clips.forEach(c => { try { c.el.pause(); } catch (e) {} });
 
+  /* Decode the clips forwards where that is possible, and seek the ones it
+     is not. Either way the picture that lands on the canvas is the same. */
+  const reader = makeFrameReader();
+
+  /* Draw the footage for one moment of one clip, however it can be read. */
+  async function paintClip(clip, local) {
+    const at = Math.min(local, Math.max(0, clip.duration - 0.02));
+    const frame = await reader.frame(clip, at);
+    if (frame) { drawClipFitted(rctx, frame, W, H, clip); return true; }
+    await seekElement(clip.el, at);
+    drawClipFitted(rctx, clip.el, W, H, clip);
+    return false;
+  }
+
+  try {
   for (let i = 0; i < frameCount; i++) {
     if (encErr) throw encErr;
     const t = i / FPS;
@@ -2673,16 +3023,21 @@ async function renderMp4() {
     if (t < dur) {
       const hit = clipAt(t);
       if (hit) {
-        await seekElement(hit.clip.el, Math.min(hit.local, Math.max(0, hit.clip.duration - 0.02)));
-        drawClipFitted(rctx, hit.clip.el, W, H);
+        const decoded = await paintClip(hit.clip, hit.local);
 
         /* Check the very first frame really carries the footage. A hidden
            video element paints nothing, and shipping a black render is far
            worse than stopping and saying so. */
         if (i === 0 && !canvasHasPicture(rctx, W, H)) {
-          // one retry: give the element a moment and draw again
-          await new Promise(r => setTimeout(r, 250));
-          drawClipFitted(rctx, hit.clip.el, W, H);
+          if (decoded) {
+            /* The decoded path produced nothing usable. Rather than give up,
+               put this clip back on the seeking path and try that. */
+            reader.drop(hit.clip);
+          } else {
+            // one retry: give the element a moment and draw again
+            await new Promise(r => setTimeout(r, 250));
+          }
+          await paintClip(hit.clip, hit.local);
           if (!canvasHasPicture(rctx, W, H)) {
             throw new Error("the picture isn't coming through — the clip decoded to an empty frame. " +
                             "Try the .webm button, or reload the page and load the clip again.");
@@ -2696,10 +3051,7 @@ async function renderMp4() {
     } else {
       // hold the final frame and fade the call to action over it
       const last = S.clips[S.clips.length - 1];
-      if (last) {
-        await seekElement(last.el, Math.max(0, last.duration - 0.05));
-        drawClipFitted(rctx, last.el, W, H);
-      }
+      if (last) await paintClip(last, Math.max(0, last.duration - 0.05));
       drawEndCard(rctx, W, H, (t - dur) / Math.max(0.01, cardSecs));
     }
 
@@ -2710,12 +3062,16 @@ async function renderMp4() {
     venc.encode(vf, { keyFrame: i % 60 === 0 });
     vf.close();
 
-    if (venc.encodeQueueSize > 16) await new Promise(r => setTimeout(r, 4));
+    await drainQueue(venc);
     if (i % 5 === 0) {
       const pct = Math.round((i / frameCount) * 100);
       setAiClockLabel(btn, "Rendering " + pct + "%");
       say(`Rendering frame ${i + 1} of ${frameCount} — ${pct}%`);
     }
+  }
+  } finally {
+    // the decoders hold real GPU frames; let them go whatever happened
+    reader.close();
   }
 
   if (pcm && aenc) {
@@ -2732,7 +3088,7 @@ async function renderMp4() {
       });
       aenc.encode(ad);
       ad.close();
-      if (aenc.encodeQueueSize > 16) await new Promise(r => setTimeout(r, 4));
+      await drainQueue(aenc);
     }
   }
 
@@ -3175,25 +3531,39 @@ async function exportEnhanced() {
     pauseAll();
     S.clips.forEach(cl => { try { cl.el.pause(); } catch (e) {} });
 
+    // Same trade as the caption export: decode forwards where the clip
+    // allows it, seek where it does not. Same picture either way.
+    const reader = makeFrameReader();
+
+    try {
     for (let i = 0; i < frameCount; i++) {
       if (encErr) throw encErr;
       const t = i / FPS;
       const hit = clipAt(t);
       if (hit) {
-        await seekElement(hit.clip.el, Math.min(hit.local, Math.max(0, hit.clip.duration - 0.02)));
-        drawEnhancedFrame(rctx, hit.clip.el, W, H, c);
+        const at = Math.min(hit.local, Math.max(0, hit.clip.duration - 0.02));
+        const frame = await reader.frame(hit.clip, at);
+        if (frame) {
+          drawEnhancedFrame(rctx, frame, W, H, c);
+        } else {
+          await seekElement(hit.clip.el, at);
+          drawEnhancedFrame(rctx, hit.clip.el, W, H, c);
+        }
       } else {
         rctx.fillStyle = "#000"; rctx.fillRect(0, 0, W, H);
       }
       const vf = new VideoFrame(rc, { timestamp: Math.round(i * 1e6 / FPS), duration: Math.round(1e6 / FPS) });
       venc.encode(vf, { keyFrame: i % 60 === 0 });
       vf.close();
-      if (venc.encodeQueueSize > 16) await new Promise(r => setTimeout(r, 4));
+      await drainQueue(venc);
       if (i % 5 === 0) {
         const pct = Math.round((i / frameCount) * 100);
         setAiClockLabel(btn, "Rendering " + pct + "%");
         setEnhanceStatus(`Rendering frame ${i + 1} of ${frameCount} — ${pct}%`);
       }
+    }
+    } finally {
+      reader.close();
     }
 
     if (pcm && aenc) {
@@ -3209,7 +3579,7 @@ async function exportEnhanced() {
         });
         aenc.encode(ad);
         ad.close();
-        if (aenc.encodeQueueSize > 16) await new Promise(r => setTimeout(r, 4));
+        await drainQueue(aenc);
       }
     }
 
@@ -3632,7 +4002,8 @@ async function callGeminiApi(promptText, mediaBlob = null, jsonSchema = null) {
      when the request is made. So if the chosen model is refused, drop it,
      pick another, and retry once - without making you click the button again. */
   let res, model, lastMsg = "";
-  for (let attempt = 0; attempt < 3; attempt++) {
+  const MAX_TRIES = 6;
+  for (let attempt = 0; attempt < MAX_TRIES; attempt++) {
     model = await resolveGeminiModel(apiKey);
     /* A busy model does not always refuse. Sometimes it accepts the request and
        simply never answers, and the newest model is the busiest one there is.
@@ -3651,7 +4022,7 @@ async function callGeminiApi(promptText, mediaBlob = null, jsonSchema = null) {
       );
     } catch (netErr) {
       if (netErr && netErr.name === "AbortError") {
-        if (attempt < 2) { GEMINI_REJECTED.add(model); GEMINI_MODEL = null; stalled = true; }
+        if (attempt < MAX_TRIES - 1) { GEMINI_BUSY.set(model, Date.now() + 60000); GEMINI_MODEL = null; stalled = true; }
         else throw new Error("Gemini didn't answer in time. Your network may be blocking it — try again.");
       } else {
         throw new Error("Couldn't reach Google. Check your connection and try again.");
@@ -3680,9 +4051,12 @@ async function callGeminiApi(promptText, mediaBlob = null, jsonSchema = null) {
     const cannot   = res.status === 400 &&
                      /not supported|does not support|unsupported|multimodal|image input|inline_?data|response_?schema|response_?mime/i.test(lastMsg);
 
-    if ((gone || swamped || cannot) && attempt < 2) {
-      GEMINI_REJECTED.add(model);   // never offer this one again this session
+    if ((gone || swamped || cannot) && attempt < MAX_TRIES - 1) {
+      /* Retired or incapable models are out for the session; busy ones only sit out a minute. */
+      if (swamped) GEMINI_BUSY.set(model, Date.now() + 60000);
+      else GEMINI_REJECTED.add(model);
       GEMINI_MODEL = null;
+      if (swamped && attempt >= 2) await new Promise(r => setTimeout(r, 2000 * (attempt - 1)));
       continue;                      // resolve a different model and try again
     }
 
@@ -3713,6 +4087,8 @@ async function callGeminiApi(promptText, mediaBlob = null, jsonSchema = null) {
 const PREFERRED_MODEL = null;
 
 let GEMINI_MODEL = null;
+const GEMINI_BUSY = new Map();       // model -> time until which it is skipped for being overloaded
+const geminiOut = n => GEMINI_REJECTED.has(n) || (GEMINI_BUSY.get(n) || 0) > Date.now();
 const GEMINI_REJECTED = new Set();   // models this key was refused, so we stop offering them
 
 async function resolveGeminiModel(apiKey) {
@@ -3731,7 +4107,7 @@ async function resolveGeminiModel(apiKey) {
       const usable = (j.models || [])
         .map(m => m.name.replace(/^models\//, ""))
         .filter(n => /flash/i.test(n) && !/image|tts|embedding|live|vision/i.test(n))
-        .filter(n => !GEMINI_REJECTED.has(n));
+        .filter(n => !geminiOut(n));
       const withMethod = (j.models || [])
         .filter(m => (m.supportedGenerationMethods || []).includes("generateContent"))
         .map(m => m.name.replace(/^models\//, ""));
@@ -3746,7 +4122,11 @@ async function resolveGeminiModel(apiKey) {
   } catch (e) { /* fall through to the defaults below */ }
   // Couldn't ask, so work down a list of current names, skipping any already refused.
   const fallbacks = ["gemini-flash-latest", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite"];
-  GEMINI_MODEL = fallbacks.find(n => !GEMINI_REJECTED.has(n)) || "gemini-flash-latest";
+  GEMINI_MODEL = fallbacks.find(n => !geminiOut(n));
+  if (!GEMINI_MODEL) {            // everything is busy: forget the cooldowns and start over
+    GEMINI_BUSY.clear();
+    GEMINI_MODEL = fallbacks.find(n => !GEMINI_REJECTED.has(n)) || "gemini-flash-latest";
+  }
   return GEMINI_MODEL;
 }
 
@@ -7336,9 +7716,11 @@ function wmFixPatch(ctx, hx, hy, hw, hh, method) {
 /* Called from drawClipFitted, which every export path goes through. The
    element is the clip's own hidden <video> during a render and the on-stage
    one during a screen recording, so look the clip up both ways. */
-function repairWatermarks(ctx, el, dx, dy, dw, dh) {
+function repairWatermarks(ctx, el, dx, dy, dw, dh, known) {
   if (!S.wm || !S.wm.on) return;
-  const clip = S.clips.find(c => c.el === el) || S.clips[activeClip];
+  /* A decoded frame cannot be looked up by element, so the caller passes the
+     clip when it has it. */
+  const clip = known || S.clips.find(c => c.el === el) || S.clips[activeClip];
   const areas = wmAreasFor(clip);
   if (!areas.length) return;
   for (const a of areas) {
