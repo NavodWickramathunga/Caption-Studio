@@ -2560,6 +2560,16 @@ class ClipDecoder {
 
    Frames handed back stay owned by the reader: draw from one, do not keep
    it, and never close it. close() when the render is done. */
+/* Nothing on this path may wait forever: a decoder or CDN that goes quiet
+   must cost a few seconds, not the whole render. */
+function withTimeout(p, ms, what) {
+  let t;
+  return Promise.race([
+    p,
+    new Promise((_, rej) => { t = setTimeout(() => rej(new Error(what + " timed out")), ms); })
+  ]).finally(() => clearTimeout(t));
+}
+
 function makeFrameReader() {
   const made = new Map();
   return {
@@ -2567,14 +2577,14 @@ function makeFrameReader() {
       if (!CAN_DECODE) return null;
       if (!made.has(clip)) {
         let d = null;
-        try { d = await new ClipDecoder(clip).open(); }
+        try { d = await withTimeout(new ClipDecoder(clip).open(), 8000, "opening the clip"); }
         catch (e) { d = null; }
         made.set(clip, d);
       }
       const d = made.get(clip);
       if (!d) return null;
       try {
-        return await d.frameAt(local);
+        return await withTimeout(d.frameAt(local), 6000, "decoding");
       } catch (e) {
         try { d.close(); } catch (e2) {}
         made.set(clip, null);     // seek this clip for the rest of the render
