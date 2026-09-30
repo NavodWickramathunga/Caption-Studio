@@ -2574,7 +2574,10 @@ function makeFrameReader() {
   const made = new Map();
   return {
     async frame(clip, local) {
-      if (!CAN_DECODE) return null;
+      /* Switched off: the decode path froze exports at "Preparing". Seeking
+         is slower but is what worked. Flip to true only after testing it. */
+      const FAST_DECODE = false;
+      if (!FAST_DECODE || !CAN_DECODE) return null;
       if (!made.has(clip)) {
         let d = null;
         try { d = await withTimeout(new ClipDecoder(clip).open(), 8000, "opening the clip"); }
